@@ -223,6 +223,18 @@ bot.on('my_chat_member', (update) => {
   }
 });
 
+// ─── Auto-register group on any group message (catches groups added before bot restart) ──
+bot.on('message', async (msg) => {
+  if (['group', 'supergroup'].includes(msg.chat?.type)) {
+    const id = msg.chat.id;
+    if (!groups[id] || groups[id].title !== msg.chat.title) {
+      groups[id] = { id, title: msg.chat.title };
+      saveGroups(groups);
+      console.log(`Auto-registered group: ${msg.chat.title} (${id})`);
+    }
+  }
+});
+
 // ─── /start (private chat only) ───────────────────────────────────────────────
 
 bot.onText(/\/start/, async (msg) => {
