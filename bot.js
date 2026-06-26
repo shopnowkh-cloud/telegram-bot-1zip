@@ -365,9 +365,10 @@ bot.on('callback_query', async (query) => {
       delete openTimers[groupId];
     }
     delete waitingForInput[privateChatId];
+
+    // Step 1: close the group — show error only if THIS fails
     try {
       await closeGroup(groupId);
-      await showGroupControl(privateChatId, msgId, groupId);
     } catch (err) {
       console.error('Close error:', err.message);
       await bot.editMessageText(
@@ -379,6 +380,16 @@ bot.on('callback_query', async (query) => {
           reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'back_control' }]] },
         }
       );
+      return;
+    }
+
+    // Step 2: update the menu — ignore "not modified" harmless error
+    try {
+      await showGroupControl(privateChatId, msgId, groupId);
+    } catch (err) {
+      if (!err.message.includes('message is not modified')) {
+        console.error('Edit after close error:', err.message);
+      }
     }
     return;
   }
