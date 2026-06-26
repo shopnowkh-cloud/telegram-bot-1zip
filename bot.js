@@ -1,4 +1,5 @@
 const { TelegramBot } = require('node-telegram-bot-api');
+const fs = require('fs');
 
 const TOKEN = process.env.BOT_TOKEN;
 if (!TOKEN) {
@@ -8,62 +9,82 @@ if (!TOKEN) {
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-// Track auto-close timers per chat: chatId → timeoutId
-const openTimers = {};
+// ─── Persistence: groups the bot is a member of ───────────────────────────────
+const GROUPS_FILE = './groups.json';
 
-// Track chats waiting for custom duration input: chatId → { userId, menuMessageId }
+function loadGroups() {
+  try { return JSON.parse(fs.readFileSync(GROUPS_FILE, 'utf8')); } catch { return {}; }
+}
+function saveGroups(groups) {
+  fs.writeFileSync(GROUPS_FILE, JSON.stringify(groups, null, 2));
+}
+
+let groups = loadGroups(); // { [groupId]: { id, title } }
+
+// ─── In-memory session state ──────────────────────────────────────────────────
+// sessions[privateChatId]     = { groupId }          ← which group is selected
+// openTimers[groupId]         = { timerId, adminId, menuMessageId }
+// waitingForInput[privateChatId] = { groupId, menuMessageId }
+const sessions       = {};
+const openTimers     = {};
 const waitingForInput = {};
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-async function isAdmin(chatId, userId) {
-  try {
-    const member = await bot.getChatMember(chatId, userId);
-    return ['administrator', 'creator'].includes(member.status);
-  } catch {
-    return false;
-  }
-}
-
-async function openGroup(chatId) {
-  await bot.setChatPermissions(chatId, {
-    can_send_messages: true,
-    can_send_polls: true,
+// ─── Group open/close helpers ─────────────────────────────────────────────────
+async function openGroup(groupId) {
+  await bot.setChatPermissions(groupId, {
+    can_send_messages:       true,
+    can_send_polls:          true,
     can_send_other_messages: true,
     can_add_web_page_previews: true,
-    can_change_info: false,
-    can_invite_users: true,
-    can_pin_messages: false,
+    can_change_info:         false,
+    can_invite_users:        true,
+    can_pin_messages:        false,
   });
 }
 
-async function closeGroup(chatId) {
-  await bot.setChatPermissions(chatId, {
-    can_send_messages: false,
-    can_send_polls: false,
+async function closeGroup(groupId) {
+  await bot.setChatPermissions(groupId, {
+    can_send_messages:       false,
+    can_send_polls:          false,
     can_send_other_messages: false,
     can_add_web_page_previews: false,
-    can_change_info: false,
-    can_invite_users: false,
-    can_pin_messages: false,
+    can_change_info:         false,
+    can_invite_users:        false,
+    can_pin_messages:        false,
   });
+}
+
+async function isAdmin(groupId, userId) {
+  try {
+    const m = await bot.getChatMember(groupId, userId);
+    return ['administrator', 'creator'].includes(m.status);
+  } catch { return false; }
 }
 
 function formatDuration(minutes) {
   if (minutes < 60) return `${minutes} នាទី`;
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
+  const h = Math.floor(minutes / 60), m = minutes % 60;
   return m > 0 ? `${h} ម៉ោង ${m} នាទី` : `${h} ម៉ោង`;
 }
 
-// ─── Keyboards ───────────────────────────────────────────────────────────────
+// ─── Keyboards ────────────────────────────────────────────────────────────────
 
-function mainKeyboard() {
+function groupListKeyboard() {
+  const rows = Object.values(groups).map(g => ([
+    { text: `👥 ${g.title}`, callback_data: `sel_${g.id}` },
+  ]));
+  return { inline_keyboard: rows };
+}
+
+function groupControlKeyboard() {
   return {
-    inline_keyboard: [[
-      { text: '🔓 បើក Group', callback_data: 'menu_open' },
-      { text: '🔒 បិទ Group',  callback_data: 'action_close' },
-    ]],
+    inline_keyboard: [
+      [
+        { text: '🔓 បើក Group', callback_data: 'menu_open'     },
+        { text: '🔒 បិទ Group',  callback_data: 'action_close'  },
+      ],
+      [{ text: '« ជ្រើស Group ផ្សេង', callback_data: 'back_groups' }],
+    ],
   };
 }
 
@@ -80,199 +101,270 @@ function durationKeyboard() {
         { text: '1 ម៉ោង',  callback_data: 'open_60'  },
         { text: '2 ម៉ោង',  callback_data: 'open_120' },
       ],
-      [
-        { text: '⌨️ កំណត់ផ្ទាល់ខ្លួន', callback_data: 'open_custom' },
-      ],
-      [
-        { text: '« ត្រឡប់', callback_data: 'menu_back' },
-      ],
+      [{ text: '⌨️ កំណត់ផ្ទាល់ខ្លួន', callback_data: 'open_custom' }],
+      [{ text: '« ត្រឡប់',            callback_data: 'back_control' }],
     ],
   };
 }
 
-// ─── Open group and update menu message ──────────────────────────────────────
+// ─── Screen renderers ─────────────────────────────────────────────────────────
 
-async function activateOpen(chatId, messageId, minutes) {
-  // Cancel any existing timer
-  if (openTimers[chatId]) {
-    clearTimeout(openTimers[chatId]);
-    delete openTimers[chatId];
+async function showGroupList(privateChatId, messageId = null) {
+  const count = Object.keys(groups).length;
+  const text  = count
+    ? '👥 *ជ្រើស Group ដែលចង់គ្រប់គ្រង:*'
+    : '⚠️ Bot មិនទាន់ត្រូវបានបន្ថែមទៅ Group ណាមួយទេ។\n\nសូម Add bot ចូល Group ហើយ តែងតាំងជា Admin មុន។';
+
+  const opts = {
+    parse_mode: 'Markdown',
+    reply_markup: count ? groupListKeyboard() : undefined,
+  };
+
+  if (messageId) {
+    await bot.editMessageText(text, { chat_id: privateChatId, message_id: messageId, ...opts });
+  } else {
+    await bot.sendMessage(privateChatId, text, opts);
+  }
+}
+
+async function showGroupControl(privateChatId, messageId, groupId) {
+  const g       = groups[groupId];
+  const hasTimer = !!openTimers[groupId];
+  const status  = hasTimer ? '🟢 កំពុងបើក' : '🔴 បានបិទ';
+
+  await bot.editMessageText(
+    `⚙️ *ការគ្រប់គ្រង Group*\n\n👥 Group: *${g.title}*\nស្ថានភាព: ${status}`,
+    {
+      chat_id: privateChatId,
+      message_id: messageId,
+      parse_mode: 'Markdown',
+      reply_markup: groupControlKeyboard(),
+    }
+  );
+}
+
+async function showDurationPicker(privateChatId, messageId) {
+  await bot.editMessageText(
+    '⏱ *ជ្រើសរើសរយៈពេល*\n\nGroup នឹងបិទដោយស្វ័យប្រវត្តិ បន្ទាប់ពីរយៈពេលដែលបានជ្រើស។',
+    {
+      chat_id: privateChatId,
+      message_id: messageId,
+      parse_mode: 'Markdown',
+      reply_markup: durationKeyboard(),
+    }
+  );
+}
+
+// ─── Activate open (called from private chat, acts on groupId) ────────────────
+
+async function activateOpen(privateChatId, messageId, groupId, minutes) {
+  if (openTimers[groupId]) {
+    clearTimeout(openTimers[groupId].timerId);
+    delete openTimers[groupId];
   }
 
-  await openGroup(chatId);
+  await openGroup(groupId);
 
   const closeAt = new Date(Date.now() + minutes * 60 * 1000);
   const timeStr = closeAt.toLocaleTimeString('km-KH', { hour: '2-digit', minute: '2-digit' });
+  const g = groups[groupId];
 
   await bot.editMessageText(
     `✅ *Group បានបើករួចហើយ!*\n\n` +
+    `👥 Group: *${g.title}*\n` +
     `⏱ រយៈពេល: *${formatDuration(minutes)}*\n` +
     `🕐 នឹងបិទដោយស្វ័យប្រវត្តិ នៅម៉ោង *${timeStr}*`,
     {
-      chat_id: chatId,
+      chat_id: privateChatId,
       message_id: messageId,
       parse_mode: 'Markdown',
       reply_markup: {
-        inline_keyboard: [[
-          { text: '🔒 បិទភ្លាមៗ', callback_data: 'action_close' },
-        ]],
+        inline_keyboard: [
+          [{ text: '🔒 បិទភ្លាមៗ',             callback_data: 'action_close' }],
+          [{ text: '« ជ្រើស Group ផ្សេង', callback_data: 'back_groups'  }],
+        ],
       },
     }
   );
 
-  openTimers[chatId] = setTimeout(async () => {
+  const timerId = setTimeout(async () => {
     try {
-      await closeGroup(chatId);
-      await bot.sendMessage(chatId, '🔒 *Group បានបិទហើយ!*\nអរគុណសម្រាប់ការចូលរួម។', {
-        parse_mode: 'Markdown',
-        reply_markup: mainKeyboard(),
-      });
+      await closeGroup(groupId);
+      await bot.sendMessage(
+        privateChatId,
+        `🔒 *${g.title}* បានបិទហើយ!\nអរគុណសម្រាប់ការចូលរួម។`,
+        { parse_mode: 'Markdown', reply_markup: groupControlKeyboard() }
+      );
     } catch (err) {
       console.error('Auto-close error:', err.message);
     }
-    delete openTimers[chatId];
+    delete openTimers[groupId];
   }, minutes * 60 * 1000);
+
+  openTimers[groupId] = { timerId, adminId: privateChatId, menuMessageId: messageId };
 }
 
-// ─── Main menu ───────────────────────────────────────────────────────────────
+// ─── Track when bot is added/removed from groups ──────────────────────────────
 
-async function sendMainMenu(chatId, messageId = null) {
-  const text =
-    '⚙️ *ការគ្រប់គ្រង Group*\n\n' +
-    '🔓 *បើក Group* — ឱ្យសមាជិកផ្ញើសារបាន\n' +
-    '🔒 *បិទ Group* — ហាមសមាជិកផ្ញើសារ';
+bot.on('my_chat_member', (update) => {
+  const chat   = update.chat;
+  const status = update.new_chat_member.status;
 
-  if (messageId) {
-    await bot.editMessageText(text, {
-      chat_id: chatId,
-      message_id: messageId,
-      parse_mode: 'Markdown',
-      reply_markup: mainKeyboard(),
-    });
-  } else {
-    await bot.sendMessage(chatId, text, {
-      parse_mode: 'Markdown',
-      reply_markup: mainKeyboard(),
-    });
+  if (['group', 'supergroup'].includes(chat.type)) {
+    if (['member', 'administrator'].includes(status)) {
+      groups[chat.id] = { id: chat.id, title: chat.title };
+      saveGroups(groups);
+      console.log(`Added to group: ${chat.title} (${chat.id})`);
+    } else if (['left', 'kicked'].includes(status)) {
+      delete groups[chat.id];
+      saveGroups(groups);
+      console.log(`Removed from group: ${chat.title} (${chat.id})`);
+    }
   }
-}
+});
 
-// ─── /start ──────────────────────────────────────────────────────────────────
+// ─── /start (private chat only) ───────────────────────────────────────────────
 
 bot.onText(/\/start/, async (msg) => {
-  await sendMainMenu(msg.chat.id);
+  const chatId = msg.chat.id;
+  if (msg.chat.type !== 'private') return;
+  delete sessions[chatId];
+  await showGroupList(chatId);
 });
 
 // ─── Inline button handler ────────────────────────────────────────────────────
 
 bot.on('callback_query', async (query) => {
-  const chatId   = query.message.chat.id;
-  const msgId    = query.message.message_id;
-  const userId   = query.from.id;
-  const data     = query.data;
+  const privateChatId = query.message.chat.id;
+  const msgId         = query.message.message_id;
+  const userId        = query.from.id;
+  const data          = query.data;
 
   await bot.answerCallbackQuery(query.id);
 
-  // Admin guard (groups only)
-  if (query.message.chat.type !== 'private') {
-    if (!(await isAdmin(chatId, userId))) {
+  // Only handle in private chat
+  if (query.message.chat.type !== 'private') return;
+
+  const session = sessions[privateChatId] || {};
+
+  // ── Select a group ──────────────────────────────────────────────────────────
+  if (data.startsWith('sel_')) {
+    const groupId = parseInt(data.slice(4));
+
+    if (!groups[groupId]) {
+      await bot.answerCallbackQuery(query.id, { text: '⚠️ Group រកមិនឃើញ។', show_alert: true });
+      return;
+    }
+    if (!(await isAdmin(groupId, userId))) {
       await bot.answerCallbackQuery(query.id, {
-        text: '❌ តែ Admin ទេ ដែលអាចប្រើមុខងារនេះ។',
+        text: '❌ អ្នកមិនមែនជា Admin នៃ Group នេះទេ។',
         show_alert: true,
       });
       return;
     }
+
+    sessions[privateChatId] = { groupId };
+    await showGroupControl(privateChatId, msgId, groupId);
+    return;
   }
 
-  // Show duration picker
+  // ── Back to group list ──────────────────────────────────────────────────────
+  if (data === 'back_groups') {
+    delete sessions[privateChatId];
+    delete waitingForInput[privateChatId];
+    await showGroupList(privateChatId, msgId);
+    return;
+  }
+
+  // ── Back to group control ───────────────────────────────────────────────────
+  if (data === 'back_control') {
+    delete waitingForInput[privateChatId];
+    if (!session.groupId) { await showGroupList(privateChatId, msgId); return; }
+    await showGroupControl(privateChatId, msgId, session.groupId);
+    return;
+  }
+
+  // Guard: must have a selected group for everything below
+  if (!session.groupId) {
+    await showGroupList(privateChatId, msgId);
+    return;
+  }
+
+  const groupId = session.groupId;
+
+  // Verify still admin
+  if (!(await isAdmin(groupId, userId))) {
+    await bot.answerCallbackQuery(query.id, {
+      text: '❌ អ្នកមិនមែនជា Admin នៃ Group នេះទេ។',
+      show_alert: true,
+    });
+    return;
+  }
+
+  // ── Show duration picker ────────────────────────────────────────────────────
   if (data === 'menu_open') {
-    await bot.editMessageText(
-      '⏱ *ជ្រើសរើសរយៈពេល*\n\nGroup នឹងបិទដោយស្វ័យប្រវត្តិ បន្ទាប់ពីរយៈពេលដែលបានជ្រើស។',
-      {
-        chat_id: chatId,
-        message_id: msgId,
-        parse_mode: 'Markdown',
-        reply_markup: durationKeyboard(),
-      }
-    );
+    await showDurationPicker(privateChatId, msgId);
     return;
   }
 
-  // Back to main menu
-  if (data === 'menu_back') {
-    delete waitingForInput[chatId];
-    await sendMainMenu(chatId, msgId);
-    return;
-  }
-
-  // Custom duration: ask admin to type minutes
+  // ── Custom duration ─────────────────────────────────────────────────────────
   if (data === 'open_custom') {
-    waitingForInput[chatId] = { userId, menuMessageId: msgId };
+    waitingForInput[privateChatId] = { groupId, menuMessageId: msgId };
     await bot.editMessageText(
       '⌨️ *កំណត់រយៈពេលផ្ទាល់ខ្លួន*\n\n' +
       'សូមវាយចំនួន *នាទី* ដែលចង់បើក Group\n' +
-      '_ឧទាហរណ៍: 45 (45 នាទី) ឬ 90 (1 ម៉ោង 30 នាទី)_',
+      '_ឧទាហរណ៍: 45 ឬ 90_',
       {
-        chat_id: chatId,
+        chat_id: privateChatId,
         message_id: msgId,
         parse_mode: 'Markdown',
         reply_markup: {
-          inline_keyboard: [[
-            { text: '« ត្រឡប់', callback_data: 'menu_open' },
-          ]],
+          inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'menu_open' }]],
         },
       }
     );
     return;
   }
 
-  // Preset duration
+  // ── Preset duration ─────────────────────────────────────────────────────────
   if (data.startsWith('open_')) {
     const minutes = parseInt(data.split('_')[1]);
     try {
-      await activateOpen(chatId, msgId, minutes);
+      await activateOpen(privateChatId, msgId, groupId, minutes);
     } catch (err) {
-      console.error('Open group error:', err.message);
+      console.error('Open error:', err.message);
       await bot.editMessageText(
         '❌ មិនអាចបើក Group បានទេ។\nសូមពិនិត្យថា bot មានសិទ្ធិ *Admin* និង *Restrict Members*។',
         {
-          chat_id: chatId,
+          chat_id: privateChatId,
           message_id: msgId,
           parse_mode: 'Markdown',
-          reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'menu_back' }]] },
+          reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'back_control' }]] },
         }
       );
     }
     return;
   }
 
-  // Close group immediately
+  // ── Close group ─────────────────────────────────────────────────────────────
   if (data === 'action_close') {
-    if (openTimers[chatId]) {
-      clearTimeout(openTimers[chatId]);
-      delete openTimers[chatId];
+    if (openTimers[groupId]) {
+      clearTimeout(openTimers[groupId].timerId);
+      delete openTimers[groupId];
     }
-    delete waitingForInput[chatId];
+    delete waitingForInput[privateChatId];
     try {
-      await closeGroup(chatId);
-      await bot.editMessageText(
-        '🔒 *Group បានបិទហើយ!*\nសមាជិកមិនអាចផ្ញើសារបានទេឥឡូវនេះ។',
-        {
-          chat_id: chatId,
-          message_id: msgId,
-          parse_mode: 'Markdown',
-          reply_markup: mainKeyboard(),
-        }
-      );
+      await closeGroup(groupId);
+      await showGroupControl(privateChatId, msgId, groupId);
     } catch (err) {
-      console.error('Close group error:', err.message);
+      console.error('Close error:', err.message);
       await bot.editMessageText(
         '❌ មិនអាចបិទ Group បានទេ។\nសូមពិនិត្យថា bot មានសិទ្ធិ *Admin* និង *Restrict Members*។',
         {
-          chat_id: chatId,
+          chat_id: privateChatId,
           message_id: msgId,
           parse_mode: 'Markdown',
-          reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'menu_back' }]] },
+          reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'back_control' }]] },
         }
       );
     }
@@ -280,46 +372,43 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// ─── Custom duration text input handler ──────────────────────────────────────
+// ─── Custom duration text input (private chat) ────────────────────────────────
 
 bot.on('message', async (msg) => {
-  const chatId = msg.chat.id;
-  const state  = waitingForInput[chatId];
+  if (msg.chat.type !== 'private') return;
+  if (!msg.text || msg.text.startsWith('/')) return;
 
-  // Only handle if we're waiting for input from this specific admin
-  if (!state || !msg.text || msg.from.id !== state.userId) return;
-  // Ignore commands
-  if (msg.text.startsWith('/')) return;
+  const privateChatId = msg.chat.id;
+  const state = waitingForInput[privateChatId];
+  if (!state || msg.from.id !== privateChatId) return;
+
+  // Delete the typed message for a clean UI
+  try { await bot.deleteMessage(privateChatId, msg.message_id); } catch {}
 
   const minutes = parseInt(msg.text.trim());
-
-  // Delete the user's input message for a cleaner chat
-  try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
-
   if (isNaN(minutes) || minutes <= 0 || minutes > 1440) {
-    const prompt = await bot.sendMessage(
-      chatId,
+    const warn = await bot.sendMessage(
+      privateChatId,
       '⚠️ សូមវាយចំនួនគត់ រវាង *1 – 1440* នាទី។',
       { parse_mode: 'Markdown' }
     );
-    // Auto-delete the warning after 4 seconds
-    setTimeout(() => bot.deleteMessage(chatId, prompt.message_id).catch(() => {}), 4000);
+    setTimeout(() => bot.deleteMessage(privateChatId, warn.message_id).catch(() => {}), 4000);
     return;
   }
 
-  delete waitingForInput[chatId];
+  delete waitingForInput[privateChatId];
 
   try {
-    await activateOpen(chatId, state.menuMessageId, minutes);
+    await activateOpen(privateChatId, state.menuMessageId, state.groupId, minutes);
   } catch (err) {
-    console.error('Open group (custom) error:', err.message);
+    console.error('Open (custom) error:', err.message);
     await bot.editMessageText(
       '❌ មិនអាចបើក Group បានទេ។\nសូមពិនិត្យថា bot មានសិទ្ធិ *Admin* និង *Restrict Members*។',
       {
-        chat_id: chatId,
+        chat_id: privateChatId,
         message_id: state.menuMessageId,
         parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'menu_back' }]] },
+        reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'back_control' }]] },
       }
     );
   }
