@@ -55,96 +55,205 @@ function formatDuration(minutes) {
   return m > 0 ? `${h} ម៉ោង ${m} នាទី` : `${h} ម៉ោង`;
 }
 
-// /start
-bot.onText(/\/start/, (msg) => {
+// Main control keyboard
+function mainKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: '🔓 បើក Group', callback_data: 'menu_open' },
+        { text: '🔒 បិទ Group', callback_data: 'action_close' },
+      ],
+    ],
+  };
+}
+
+// Duration selection keyboard
+function durationKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: '5 នាទី',   callback_data: 'open_5'   },
+        { text: '10 នាទី',  callback_data: 'open_10'  },
+        { text: '15 នាទី',  callback_data: 'open_15'  },
+      ],
+      [
+        { text: '30 នាទី',  callback_data: 'open_30'  },
+        { text: '1 ម៉ោង',   callback_data: 'open_60'  },
+        { text: '2 ម៉ោង',   callback_data: 'open_120' },
+      ],
+      [
+        { text: '« ត្រឡប់', callback_data: 'menu_back' },
+      ],
+    ],
+  };
+}
+
+// Send or update main menu
+async function sendMainMenu(chatId, messageId = null) {
+  const text =
+    '⚙️ *ការគ្រប់គ្រង Group*\n\n' +
+    '🔓 *បើក Group* — ឱ្យសមាជិកផ្ញើសារបាន\n' +
+    '🔒 *បិទ Group* — ហាមសមាជិកផ្ញើសារ';
+
+  if (messageId) {
+    await bot.editMessageText(text, {
+      chat_id: chatId,
+      message_id: messageId,
+      parse_mode: 'Markdown',
+      reply_markup: mainKeyboard(),
+    });
+  } else {
+    await bot.sendMessage(chatId, text, {
+      parse_mode: 'Markdown',
+      reply_markup: mainKeyboard(),
+    });
+  }
+}
+
+// /start → show main menu
+bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
-  bot.sendMessage(chatId,
-    '👋 សួស្តី!\n\n' +
-    'ពាក្យបញ្ជា:\n' +
-    '🔓 /open [នាទី] — បើក group ឱ្យសមាជិកផ្ញើសារ (ឧ: /open 30)\n' +
-    '🔒 /close — បិទ group ភ្លាមៗ\n\n' +
-    '⚠️ តម្រូវឱ្យ bot មានសិទ្ធិ Admin'
-  );
+  await sendMainMenu(chatId);
 });
 
-// /open [minutes]
-bot.onText(/\/open(?:\s+(\d+))?/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
+// Handle all inline button presses
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  const messageId = query.message.message_id;
+  const userId = query.from.id;
+  const data = query.data;
 
-  if (msg.chat.type === 'private') {
-    return bot.sendMessage(chatId, '⚠️ ពាក្យបញ្ជានេះ ប្រើបានតែក្នុង Group ប៉ុណ្ណោះ។');
+  // Always acknowledge the callback
+  await bot.answerCallbackQuery(query.id);
+
+  // Admin check for group chats
+  if (query.message.chat.type !== 'private') {
+    const admin = await isAdmin(chatId, userId);
+    if (!admin) {
+      await bot.answerCallbackQuery(query.id, {
+        text: '❌ តែ Admin ទេ ដែលអាចប្រើមុខងារនេះ។',
+        show_alert: true,
+      });
+      return;
+    }
   }
 
-  if (!(await isAdmin(chatId, userId))) {
-    return bot.sendMessage(chatId, '❌ តែ Admin ទេ ដែលអាចប្រើពាក្យបញ្ជានេះ។');
-  }
-
-  const minutes = parseInt(match[1]);
-  if (!match[1] || isNaN(minutes) || minutes <= 0) {
-    return bot.sendMessage(chatId, '⚠️ សូមបញ្ចូលរយៈពេលជាចំនួននាទី។\nឧទាហរណ៍: /open 30');
-  }
-
-  // Cancel any existing timer
-  if (openTimers[chatId]) {
-    clearTimeout(openTimers[chatId]);
-    delete openTimers[chatId];
-  }
-
-  try {
-    await openGroup(chatId);
-
-    const closeAt = new Date(Date.now() + minutes * 60 * 1000);
-    const timeStr = closeAt.toLocaleTimeString('km-KH', { hour: '2-digit', minute: '2-digit' });
-
-    await bot.sendMessage(chatId,
-      `🔓 Group បានបើកហើយ!\n` +
-      `⏱ រយៈពេល: ${formatDuration(minutes)}\n` +
-      `🕐 នឹងបិទដោយស្វ័យប្រវត្តិ នៅម៉ោង ${timeStr}`
-    );
-
-    // Auto-close after duration
-    openTimers[chatId] = setTimeout(async () => {
-      try {
-        await closeGroup(chatId);
-        await bot.sendMessage(chatId, '🔒 Group បានបិទហើយ។ អរគុណសម្រាប់ការចូលរួម!');
-      } catch (err) {
-        console.error('Auto-close error:', err.message);
+  // Show duration picker
+  if (data === 'menu_open') {
+    await bot.editMessageText(
+      '⏱ *ជ្រើសរើសរយៈពេល*\n\nGroup នឹងបិទដោយស្វ័យប្រវត្តិ បន្ទាប់ពីរយៈពេលដែលបានជ្រើស។',
+      {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown',
+        reply_markup: durationKeyboard(),
       }
+    );
+    return;
+  }
+
+  // Go back to main menu
+  if (data === 'menu_back') {
+    await sendMainMenu(chatId, messageId);
+    return;
+  }
+
+  // Open group for selected duration
+  if (data.startsWith('open_')) {
+    const minutes = parseInt(data.split('_')[1]);
+
+    // Cancel any existing timer
+    if (openTimers[chatId]) {
+      clearTimeout(openTimers[chatId]);
       delete openTimers[chatId];
-    }, minutes * 60 * 1000);
+    }
 
-  } catch (err) {
-    console.error('Open group error:', err.message);
-    bot.sendMessage(chatId, '❌ មិនអាចបើក Group បានទេ។ សូមពិនិត្យថា bot មានសិទ្ធិ Admin។');
+    try {
+      await openGroup(chatId);
+
+      const closeAt = new Date(Date.now() + minutes * 60 * 1000);
+      const timeStr = closeAt.toLocaleTimeString('km-KH', { hour: '2-digit', minute: '2-digit' });
+
+      await bot.editMessageText(
+        `✅ *Group បានបើករួចហើយ!*\n\n` +
+        `⏱ រយៈពេល: *${formatDuration(minutes)}*\n` +
+        `🕐 នឹងបិទដោយស្វ័យប្រវត្តិ នៅម៉ោង *${timeStr}*`,
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔒 បិទភ្លាមៗ', callback_data: 'action_close' }],
+            ],
+          },
+        }
+      );
+
+      // Auto-close after duration
+      openTimers[chatId] = setTimeout(async () => {
+        try {
+          await closeGroup(chatId);
+          await bot.sendMessage(
+            chatId,
+            '🔒 *Group បានបិទហើយ!*\nអរគុណសម្រាប់ការចូលរួម។',
+            {
+              parse_mode: 'Markdown',
+              reply_markup: mainKeyboard(),
+            }
+          );
+        } catch (err) {
+          console.error('Auto-close error:', err.message);
+        }
+        delete openTimers[chatId];
+      }, minutes * 60 * 1000);
+
+    } catch (err) {
+      console.error('Open group error:', err.message);
+      await bot.editMessageText(
+        '❌ មិនអាចបើក Group បានទេ។\nសូមពិនិត្យថា bot មានសិទ្ធិ *Admin* និង *Restrict Members*។',
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'menu_back' }]] },
+        }
+      );
+    }
+    return;
   }
-});
 
-// /close
-bot.onText(/\/close/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
+  // Close group immediately
+  if (data === 'action_close') {
+    if (openTimers[chatId]) {
+      clearTimeout(openTimers[chatId]);
+      delete openTimers[chatId];
+    }
 
-  if (msg.chat.type === 'private') {
-    return bot.sendMessage(chatId, '⚠️ ពាក្យបញ្ជានេះ ប្រើបានតែក្នុង Group ប៉ុណ្ណោះ។');
-  }
-
-  if (!(await isAdmin(chatId, userId))) {
-    return bot.sendMessage(chatId, '❌ តែ Admin ទេ ដែលអាចប្រើពាក្យបញ្ជានេះ។');
-  }
-
-  // Cancel auto-close timer if any
-  if (openTimers[chatId]) {
-    clearTimeout(openTimers[chatId]);
-    delete openTimers[chatId];
-  }
-
-  try {
-    await closeGroup(chatId);
-    await bot.sendMessage(chatId, '🔒 Group បានបិទហើយ។ សមាជិកមិនអាចផ្ញើសារបានទេឥឡូវនេះ។');
-  } catch (err) {
-    console.error('Close group error:', err.message);
-    bot.sendMessage(chatId, '❌ មិនអាចបិទ Group បានទេ។ សូមពិនិត្យថា bot មានសិទ្ធិ Admin។');
+    try {
+      await closeGroup(chatId);
+      await bot.editMessageText(
+        '🔒 *Group បានបិទហើយ!*\nសមាជិកមិនអាចផ្ញើសារបានទេឥឡូវនេះ។',
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'Markdown',
+          reply_markup: mainKeyboard(),
+        }
+      );
+    } catch (err) {
+      console.error('Close group error:', err.message);
+      await bot.editMessageText(
+        '❌ មិនអាចបិទ Group បានទេ។\nសូមពិនិត្យថា bot មានសិទ្ធិ *Admin* និង *Restrict Members*។',
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'menu_back' }]] },
+        }
+      );
+    }
+    return;
   }
 });
 
