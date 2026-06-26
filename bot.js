@@ -166,7 +166,7 @@ async function activateOpen(privateChatId, messageId, groupId, minutes) {
   await openGroup(groupId);
 
   const closeAt = new Date(Date.now() + minutes * 60 * 1000);
-  const timeStr = closeAt.toLocaleTimeString('km-KH', { hour: '2-digit', minute: '2-digit' });
+  const timeStr = closeAt.toLocaleTimeString('km-KH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Phnom_Penh' });
   const g = groups[groupId];
 
   await bot.editMessageText(
