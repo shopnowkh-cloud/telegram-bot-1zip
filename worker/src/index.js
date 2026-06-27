@@ -919,6 +919,94 @@ async function apiClose(request, env) {
   return json({ ok: true });
 }
 
+async function apiSettings(request, env) {
+  if (request.method === 'GET') {
+    const url = new URL(request.url);
+    const initData = request.headers.get('X-Init-Data') || '';
+    if (!(await validateInitData(initData, env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+    const groupId = url.searchParams.get('groupId');
+    if (!groupId) return json({ ok: false, error: 'Missing groupId' }, 400);
+    const s = await getSettings(env.KV, groupId);
+    return json({ ok: true, settings: s });
+  }
+  const body = await request.json();
+  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+  const user = getUserFromInitData(body.initData || '');
+  const { groupId, settings } = body;
+  if (!groupId) return json({ ok: false, error: 'Missing groupId' }, 400);
+  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return json({ ok: false, error: 'Not an admin' }, 403);
+  const cur = await getSettings(env.KV, String(groupId));
+  const merged = {
+    ...cur,
+    welcomeEnabled: settings.welcomeEnabled ?? cur.welcomeEnabled,
+    welcomeText:    settings.welcomeText    ?? cur.welcomeText,
+    autoNotify: { ...cur.autoNotify, ...(settings.autoNotify || {}) },
+    antiSpam:   { ...cur.antiSpam,   ...(settings.antiSpam   || {}) },
+    schedule:   { ...cur.schedule,   ...(settings.schedule   || {}) },
+  };
+  await saveSettings(env.KV, String(groupId), merged);
+  return json({ ok: true });
+}
+
+async function apiBroadcast(request, env) {
+  const body = await request.json();
+  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+  const user = getUserFromInitData(body.initData || '');
+  const { groupId, text } = body;
+  if (!groupId || !text?.trim()) return json({ ok: false, error: 'Missing params' }, 400);
+  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return json({ ok: false, error: 'Not an admin' }, 403);
+  await tg('sendMessage', { chat_id: groupId, text: text.trim() }, env.BOT_TOKEN);
+  return json({ ok: true });
+}
+
+async function apiStats(request, env) {
+  const url = new URL(request.url);
+  const initData = request.headers.get('X-Init-Data') || '';
+  if (!(await validateInitData(initData, env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+  const groupId = url.searchParams.get('groupId');
+  if (!groupId) return json({ ok: false, error: 'Missing groupId' }, 400);
+  try {
+    const [count, timer, s] = await Promise.all([
+      tg('getChatMemberCount', { chat_id: Number(groupId) }, env.BOT_TOKEN),
+      getTimer(env.KV, groupId),
+      getSettings(env.KV, groupId),
+    ]);
+    return json({ ok: true, stats: {
+      memberCount: count,
+      isOpen: !!timer,
+      closeAt: timer?.closeAt || null,
+      welcomeEnabled: s.welcomeEnabled,
+      antiSpamEnabled: s.antiSpam.enabled,
+      notifyEnabled: s.autoNotify.openEnabled || s.autoNotify.closeEnabled,
+      scheduleEnabled: !!(s.schedule.openTime || s.schedule.closeTime),
+      scheduleOpen: s.schedule.openTime,
+      scheduleClose: s.schedule.closeTime,
+    }});
+  } catch(e) { return json({ ok: false, error: e.message }, 500); }
+}
+
+async function apiModerate(request, env) {
+  const body = await request.json();
+  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+  const user = getUserFromInitData(body.initData || '');
+  const { groupId, userId, action, minutes } = body;
+  if (!groupId || !userId || !action) return json({ ok: false, error: 'Missing params' }, 400);
+  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return json({ ok: false, error: 'Not an admin' }, 403);
+  const uid = Number(userId);
+  if (action === 'kick') {
+    await tg('banChatMember', { chat_id: Number(groupId), user_id: uid }, env.BOT_TOKEN);
+    await tg('unbanChatMember', { chat_id: Number(groupId), user_id: uid, only_if_banned: true }, env.BOT_TOKEN);
+  } else if (action === 'ban') {
+    await tg('banChatMember', { chat_id: Number(groupId), user_id: uid }, env.BOT_TOKEN);
+  } else if (action === 'mute') {
+    const until = Math.floor((Date.now() + (minutes || 60) * 60000) / 1000);
+    await tg('restrictChatMember', { chat_id: Number(groupId), user_id: uid, permissions: { can_send_messages: false, can_send_polls: false, can_send_other_messages: false, can_add_web_page_previews: false }, until_date: until }, env.BOT_TOKEN);
+  } else if (action === 'unban') {
+    await tg('unbanChatMember', { chat_id: Number(groupId), user_id: uid }, env.BOT_TOKEN);
+  }
+  return json({ ok: true });
+}
+
 // ─── Main export ───────────────────────────────────────────────────────────────
 export default {
   async fetch(request, env) {
@@ -953,9 +1041,13 @@ export default {
     }
 
     // API
-    if (method === 'GET'  && url.pathname === '/api/groups') return apiGroups(request, env);
-    if (method === 'POST' && url.pathname === '/api/open')   return apiOpen(request, env);
-    if (method === 'POST' && url.pathname === '/api/close')  return apiClose(request, env);
+    if (method === 'GET'  && url.pathname === '/api/groups')    return apiGroups(request, env);
+    if (method === 'POST' && url.pathname === '/api/open')      return apiOpen(request, env);
+    if (method === 'POST' && url.pathname === '/api/close')     return apiClose(request, env);
+    if ((method === 'GET' || method === 'POST') && url.pathname === '/api/settings')  return apiSettings(request, env);
+    if (method === 'POST' && url.pathname === '/api/broadcast') return apiBroadcast(request, env);
+    if (method === 'GET'  && url.pathname === '/api/stats')     return apiStats(request, env);
+    if (method === 'POST' && url.pathname === '/api/moderate')  return apiModerate(request, env);
 
     // Webhook
     if (method === 'POST' && url.pathname === '/webhook') {
