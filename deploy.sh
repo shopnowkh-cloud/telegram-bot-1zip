@@ -1,25 +1,32 @@
 #!/bin/bash
 set -e
 
-WORKER_NAME="telegram-group-bot"
-WORKER_URL="https://${WORKER_NAME}.limsovannrady.workers.dev"
-
-echo "🚀 Deploying ${WORKER_NAME} to Cloudflare Workers..."
-
+echo "======================================="
+echo " Deploy: telegram-group-bot"
+echo "======================================="
 npx wrangler deploy --no-bundle
-
 echo ""
-echo "✅ Deploy successful!"
-echo "🔗 Worker URL: ${WORKER_URL}"
-echo ""
-echo "📡 Setting Telegram webhook via /setup..."
-curl -s "${WORKER_URL}/setup" | python3 -c "
+echo "📡 Setting webhook for group bot..."
+curl -s "https://telegram-group-bot.limsovannrady.workers.dev/setup" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-if d.get('ok'):
-    print('✅ Webhook set to:', d.get('webhook'))
-    print('   Pending updates:', d.get('info',{}).get('pending_update_count',0))
-else:
-    print('❌ Webhook error:', d.get('error','unknown'))
-    exit(1)
+if d.get('ok'): print('✅ Group bot webhook set:', d.get('webhook'))
+else: print('❌ Error:', d.get('error'))
 "
+
+echo ""
+echo "======================================="
+echo " Deploy: limsovannrady-tts-bot (@limsovannradybot)"
+echo "======================================="
+npx wrangler deploy --config wrangler-tts.toml
+echo ""
+echo "📡 Setting webhook for TTS bot..."
+curl -s "https://limsovannrady-tts-bot.limsovannrady.workers.dev/setup" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if d.get('ok'): print('✅ TTS bot webhook set:', d.get('webhook'))
+else: print('❌ Error:', d.get('error'))
+"
+
+echo ""
+echo "✅ All deployments complete!"

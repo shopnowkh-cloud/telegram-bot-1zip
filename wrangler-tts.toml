@@ -1,0 +1,7 @@
+name = "limsovannrady-tts-bot"
+main = "src-tts/index.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "d19e046ab1174544b19f96d92771fac0"
