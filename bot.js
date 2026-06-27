@@ -219,12 +219,13 @@ async function synthesizeTTS(text, voiceName, speed = 'x1') {
   const tts = new MsEdgeTTS();
   await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
 
+  const { audioStream } = await tts.toStream(cleanText, { rate });
+
   const chunks = [];
   await new Promise((resolve, reject) => {
-    const readable = tts.toStream(cleanText, { rate });
-    readable.on('data', chunk => chunks.push(chunk));
-    readable.on('end', resolve);
-    readable.on('error', reject);
+    audioStream.on('data', chunk => chunks.push(chunk));
+    audioStream.on('end', resolve);
+    audioStream.on('error', reject);
   });
 
   return Buffer.concat(chunks);
