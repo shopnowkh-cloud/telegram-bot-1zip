@@ -1,6 +1,8 @@
 import MINI_APP_HTML from './miniapp.html';
 
-const TG = 'https://api.telegram.org';
+const TG    = 'https://api.telegram.org';
+const ADMIN_ID = 5002402843;
+const EDGE_TTS_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
 
 // ─── Telegram API ──────────────────────────────────────────────────────────────
 async function tg(method, body, token) {
@@ -9,15 +11,15 @@ async function tg(method, body, token) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const json = await r.json();
-  if (!json.ok) throw new Error(`TG ${method}: ${json.description}`);
-  return json.result;
+  const data = await r.json();
+  if (!data.ok) throw new Error(`TG ${method}: ${data.description}`);
+  return data.result;
 }
 
 // ─── KV helpers ────────────────────────────────────────────────────────────────
-const getGroups   = async (KV)           => (await KV.get('groups', 'json')) || {};
+const getGroups   = async (KV)           => (await KV.get('groups', 'json'))         || {};
 const saveGroups  = async (KV, d)        => KV.put('groups', JSON.stringify(d));
-const getSession  = async (KV, pid)      => (await KV.get(`sess:${pid}`, 'json')) || {};
+const getSession  = async (KV, pid)      => (await KV.get(`sess:${pid}`, 'json'))    || {};
 const setSession  = async (KV, pid, d)   => KV.put(`sess:${pid}`, JSON.stringify(d), { expirationTtl: 3600 });
 const delSession  = async (KV, pid)      => KV.delete(`sess:${pid}`);
 const getWaiting  = async (KV, pid)      => KV.get(`wait:${pid}`, 'json');
@@ -48,6 +50,20 @@ async function getSettings(KV, gid) {
 }
 const saveSettings = async (KV, gid, s) => KV.put(`settings:${gid}`, JSON.stringify(s));
 
+// ─── TTS KV helpers ────────────────────────────────────────────────────────────
+async function getTTSPref(KV, uid) {
+  return (await KV.get(`tts:pref:${uid}`, 'json')) || { gender: 'female', speed: 'x1' };
+}
+async function setTTSPref(KV, uid, pref) {
+  await KV.put(`tts:pref:${uid}`, JSON.stringify(pref), { expirationTtl: 365 * 86400 });
+}
+async function getTTSCache(KV, key) {
+  return KV.get(`tts:cache:${key}`);
+}
+async function setTTSCache(KV, key, fileId) {
+  await KV.put(`tts:cache:${key}`, fileId, { expirationTtl: 7 * 86400 });
+}
+
 // ─── Permissions ───────────────────────────────────────────────────────────────
 const OPEN_PERMS  = { can_send_messages: true,  can_send_polls: true,  can_send_other_messages: true,  can_add_web_page_previews: true,  can_change_info: false, can_invite_users: true,  can_pin_messages: false };
 const CLOSE_PERMS = { can_send_messages: false, can_send_polls: false, can_send_other_messages: false, can_add_web_page_previews: false, can_change_info: false, can_invite_users: false, can_pin_messages: false };
@@ -76,11 +92,291 @@ function currentHHMM() {
   return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
 }
 
-// ─── Keyboards ─────────────────────────────────────────────────────────────────
+// ─── TTS: Voice maps ───────────────────────────────────────────────────────────
+const MALE_VOICES = {
+  'af':'af-ZA-WillemNeural','am':'am-ET-AmehaNeural','ar':'ar-SA-HamedNeural',
+  'az':'az-AZ-BabakNeural','bg':'bg-BG-BorislavNeural','bn':'bn-BD-PradeepNeural',
+  'bs':'bs-BA-GoranNeural','ca':'ca-ES-EnricNeural','cs':'cs-CZ-AntoninNeural',
+  'cy':'cy-GB-AledNeural','da':'da-DK-JeppeNeural','de':'de-DE-FlorianMultilingualNeural',
+  'el':'el-GR-NestorasNeural','en':'en-US-AndrewMultilingualNeural','es':'es-ES-AlvaroNeural',
+  'et':'et-EE-KertNeural','fa':'fa-IR-FaridNeural','fi':'fi-FI-HarriNeural',
+  'fil':'fil-PH-AngeloNeural','fr':'fr-FR-RemyMultilingualNeural','ga':'ga-IE-ColmNeural',
+  'gl':'gl-ES-RoiNeural','gu':'gu-IN-NiranjanNeural','he':'he-IL-AvriNeural',
+  'hi':'hi-IN-MadhurNeural','hr':'hr-HR-SreckoNeural','hu':'hu-HU-TamasNeural',
+  'id':'id-ID-ArdiNeural','is':'is-IS-GunnarNeural','it':'it-IT-GiuseppeMultilingualNeural',
+  'ja':'ja-JP-KeitaNeural','jv':'jv-ID-DimasNeural','ka':'ka-GE-GiorgiNeural',
+  'kk':'kk-KZ-DauletNeural','km':'km-KH-PisethNeural','kn':'kn-IN-GaganNeural',
+  'ko':'ko-KR-HyunsuMultilingualNeural','lo':'lo-LA-ChanthavongNeural','lt':'lt-LT-LeonasNeural',
+  'lv':'lv-LV-NilsNeural','mk':'mk-MK-AleksandarNeural','ml':'ml-IN-MidhunNeural',
+  'mn':'mn-MN-BataaNeural','mr':'mr-IN-ManoharNeural','ms':'ms-MY-OsmanNeural',
+  'mt':'mt-MT-JosephNeural','my':'my-MM-ThihaNeural','nb':'nb-NO-FinnNeural',
+  'ne':'ne-NP-SagarNeural','nl':'nl-NL-MaartenNeural','pl':'pl-PL-MarekNeural',
+  'ps':'ps-AF-GulNawazNeural','pt':'pt-BR-AntonioNeural','ro':'ro-RO-EmilNeural',
+  'ru':'ru-RU-DmitryNeural','si':'si-LK-SameeraNeural','sk':'sk-SK-LukasNeural',
+  'sl':'sl-SI-RokNeural','so':'so-SO-MuuseNeural','sq':'sq-AL-IlirNeural',
+  'sr':'sr-RS-NicholasNeural','su':'su-ID-JajangNeural','sv':'sv-SE-MattiasNeural',
+  'sw':'sw-KE-RafikiNeural','ta':'ta-IN-ValluvarNeural','te':'te-IN-MohanNeural',
+  'th':'th-TH-NiwatNeural','tr':'tr-TR-AhmetNeural','uk':'uk-UA-OstapNeural',
+  'ur':'ur-IN-SalmanNeural','uz':'uz-UZ-SardorNeural','vi':'vi-VN-NamMinhNeural',
+  'zh-CN':'zh-CN-YunyangNeural','zh-TW':'zh-TW-YunJheNeural','zu':'zu-ZA-ThembaNeural',
+};
+
+const FEMALE_VOICES = {
+  'af':'af-ZA-AdriNeural','am':'am-ET-MekdesNeural','ar':'ar-SA-ZariyahNeural',
+  'az':'az-AZ-BanuNeural','bg':'bg-BG-KalinaNeural','bn':'bn-BD-NabanitaNeural',
+  'bs':'bs-BA-VesnaNeural','ca':'ca-ES-JoanaNeural','cs':'cs-CZ-VlastaNeural',
+  'cy':'cy-GB-NiaNeural','da':'da-DK-ChristelNeural','de':'de-DE-SeraphinaMultilingualNeural',
+  'el':'el-GR-AthinaNeural','en':'en-US-AvaMultilingualNeural','es':'es-ES-XimenaNeural',
+  'et':'et-EE-AnuNeural','fa':'fa-IR-DilaraNeural','fi':'fi-FI-NooraNeural',
+  'fil':'fil-PH-BlessicaNeural','fr':'fr-FR-VivienneMultilingualNeural','ga':'ga-IE-OrlaNeural',
+  'gl':'gl-ES-SabelaNeural','gu':'gu-IN-DhwaniNeural','he':'he-IL-HilaNeural',
+  'hi':'hi-IN-SwaraNeural','hr':'hr-HR-GabrijelaNeural','hu':'hu-HU-NoemiNeural',
+  'id':'id-ID-GadisNeural','is':'is-IS-GudrunNeural','it':'it-IT-IsabellaNeural',
+  'ja':'ja-JP-NanamiNeural','jv':'jv-ID-SitiNeural','ka':'ka-GE-EkaNeural',
+  'kk':'kk-KZ-AigulNeural','km':'km-KH-SreymomNeural','kn':'kn-IN-SapnaNeural',
+  'ko':'ko-KR-SunHiNeural','lo':'lo-LA-KeomanyNeural','lt':'lt-LT-OnaNeural',
+  'lv':'lv-LV-EveritaNeural','mk':'mk-MK-MarijaNeural','ml':'ml-IN-SobhanaNeural',
+  'mn':'mn-MN-YesuiNeural','mr':'mr-IN-AarohiNeural','ms':'ms-MY-YasminNeural',
+  'mt':'mt-MT-GraceNeural','my':'my-MM-NilarNeural','nb':'nb-NO-PernilleNeural',
+  'ne':'ne-NP-HemkalaNeural','nl':'nl-NL-ColetteNeural','pl':'pl-PL-ZofiaNeural',
+  'ps':'ps-AF-LatifaNeural','pt':'pt-BR-ThalitaMultilingualNeural','ro':'ro-RO-AlinaNeural',
+  'ru':'ru-RU-SvetlanaNeural','si':'si-LK-ThiliniNeural','sk':'sk-SK-ViktoriaNeural',
+  'sl':'sl-SI-PetraNeural','so':'so-SO-UbaxNeural','sq':'sq-AL-AnilaNeural',
+  'sr':'sr-RS-SophieNeural','su':'su-ID-TutiNeural','sv':'sv-SE-SofieNeural',
+  'sw':'sw-KE-ZuriNeural','ta':'ta-IN-PallaviNeural','te':'te-IN-ShrutiNeural',
+  'th':'th-TH-PremwadeeNeural','tr':'tr-TR-EmelNeural','uk':'uk-UA-PolinaNeural',
+  'ur':'ur-IN-GulNeural','uz':'uz-UZ-MadinaNeural','vi':'vi-VN-HoaiMyNeural',
+  'zh-CN':'zh-CN-XiaoxiaoNeural','zh-TW':'zh-TW-HsiaoChenNeural','zu':'zu-ZA-ThandoNeural',
+};
+
+const SPEED_RATES  = { 'x0.5': '-50%', 'x1': '+0%', 'x1.5': '+50%', 'x2': '+100%' };
+const SPEED_LABELS = { 'x0.5': '🐢 x0.5', 'x1': '▶️ x1', 'x1.5': '⚡ x1.5', 'x2': '🚀 x2' };
+
+// ─── TTS: Language detection ───────────────────────────────────────────────────
+const SCRIPT_MAP = [
+  [/[\u1780-\u17FF]/, 'km'],
+  [/[\u0E00-\u0E7F]/, 'th'],
+  [/[\u0E80-\u0EFF]/, 'lo'],
+  [/[\u1000-\u109F]/, 'my'],
+  [/[\u1200-\u137F]/, 'am'],
+  [/[\u10A0-\u10FF]/, 'ka'],
+  [/[\u0590-\u05FF]/, 'he'],
+  [/[\u0900-\u097F]/, 'hi'],
+  [/[\u0980-\u09FF]/, 'bn'],
+  [/[\u0A80-\u0AFF]/, 'gu'],
+  [/[\u0B80-\u0BFF]/, 'ta'],
+  [/[\u0C00-\u0C7F]/, 'te'],
+  [/[\u0C80-\u0CFF]/, 'kn'],
+  [/[\u0D00-\u0D7F]/, 'ml'],
+  [/[\u0D80-\u0DFF]/, 'si'],
+  [/[\u0600-\u06FF]/, 'ar'],
+  [/[\u3040-\u30FF]/, 'ja'],
+  [/[\uAC00-\uD7AF]/, 'ko'],
+  [/[\u4E00-\u9FFF\u3400-\u4DBF]/, 'zh-CN'],
+  [/[\u0400-\u04FF]/, 'ru'],
+];
+
+function detectLang(text) {
+  for (const [pattern, lang] of SCRIPT_MAP) {
+    if (pattern.test(text)) return lang;
+  }
+  return 'en';
+}
+
+function getVoice(lang, gender) {
+  const map = gender === 'male' ? MALE_VOICES : FEMALE_VOICES;
+  return map[lang] || map['en'];
+}
+
+// ─── TTS: Text sanitization ────────────────────────────────────────────────────
+function escapeXml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+function stripUnspeakable(text) {
+  return text
+    .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
+    .replace(/[\u2600-\u27FF\u2B00-\u2BFF\uFE00-\uFEFF]/g, '')
+    .replace(/[\uD800-\uDFFF]/g, '')
+    .trim();
+}
+
+// ─── TTS: Edge TTS via WebSocket ───────────────────────────────────────────────
+async function synthesizeEdgeTTS(text, voiceName, rate = '+0%') {
+  const connId = crypto.randomUUID().replace(/-/g, '').toUpperCase();
+  const wsUrl  = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1` +
+                 `?TrustedClientToken=${EDGE_TTS_TOKEN}&ConnectionId=${connId}`;
+
+  const response = await fetch(wsUrl, {
+    headers: {
+      'Upgrade': 'websocket',
+      'Origin': 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+    },
+  });
+
+  const ws = response.webSocket;
+  if (!ws) throw new Error('WebSocket upgrade failed');
+  ws.accept();
+
+  const reqId = crypto.randomUUID().replace(/-/g, '').toUpperCase();
+  const ts    = new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15) + 'Z';
+
+  ws.send(
+    `X-Timestamp:${ts}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n` +
+    `{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}`
+  );
+
+  const cleanText = stripUnspeakable(text);
+  const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>` +
+               `<voice name='${voiceName}'><prosody rate='${rate}'>${escapeXml(cleanText)}</prosody></voice></speak>`;
+
+  ws.send(
+    `X-RequestId:${reqId}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${ts}\r\nPath:ssml\r\n\r\n${ssml}`
+  );
+
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let settled  = false;
+
+    const finish = (ok, val) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      ok ? resolve(val) : reject(val);
+    };
+
+    const timer = setTimeout(() => {
+      ws.close();
+      finish(false, new Error('TTS timeout'));
+    }, 25000);
+
+    ws.addEventListener('message', ({ data }) => {
+      if (typeof data === 'string') {
+        if (data.includes('Path:turn.end')) {
+          ws.close();
+          if (!chunks.length) { finish(false, new Error('No audio received')); return; }
+          const total  = chunks.reduce((s, c) => s + c.byteLength, 0);
+          const merged = new Uint8Array(total);
+          let off = 0;
+          for (const c of chunks) { merged.set(new Uint8Array(c), off); off += c.byteLength; }
+          finish(true, merged);
+        }
+      } else if (data instanceof ArrayBuffer && data.byteLength > 2) {
+        const headerLen  = new DataView(data).getUint16(0, false);
+        const audioStart = 2 + headerLen;
+        if (audioStart < data.byteLength) chunks.push(data.slice(audioStart));
+      }
+    });
+
+    ws.addEventListener('error', () => finish(false, new Error('WebSocket error')));
+    ws.addEventListener('close', () => {
+      if (!settled && chunks.length) {
+        const total  = chunks.reduce((s, c) => s + c.byteLength, 0);
+        const merged = new Uint8Array(total);
+        let off = 0;
+        for (const c of chunks) { merged.set(new Uint8Array(c), off); off += c.byteLength; }
+        finish(true, merged);
+      } else {
+        finish(false, new Error('Connection closed without audio'));
+      }
+    });
+  });
+}
+
+// Send voice via multipart upload (supports file_id or raw bytes)
+async function sendVoice(chatId, audioOrFileId, token, extra = {}) {
+  if (typeof audioOrFileId === 'string') {
+    return tg('sendVoice', { chat_id: chatId, voice: audioOrFileId, ...extra }, token);
+  }
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  form.append('voice', new Blob([audioOrFileId], { type: 'audio/mpeg' }), 'voice.mp3');
+  for (const [k, v] of Object.entries(extra)) {
+    form.append(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+  }
+  const r    = await fetch(`${TG}/bot${token}/sendVoice`, { method: 'POST', body: form });
+  const data = await r.json();
+  if (!data.ok) throw new Error(`sendVoice: ${data.description}`);
+  return data.result;
+}
+
+// ─── TTS: Keyboards ────────────────────────────────────────────────────────────
+function buildVoiceKeyboard(gender, speed) {
+  const gRow = [
+    { text: `${gender === 'female' ? '✅ ' : ''}👩 ស្រី`,  callback_data: 'voice:female' },
+    { text: `${gender === 'male'   ? '✅ ' : ''}👨 ប្រុស`, callback_data: 'voice:male'   },
+  ];
+  const sRow = Object.keys(SPEED_RATES).map(s => ({
+    text: (s === speed ? '✅ ' : '') + SPEED_LABELS[s],
+    callback_data: `set_speed:${s}`,
+  }));
+  return { inline_keyboard: [gRow, sRow] };
+}
+
+// ─── TTS: Main handler ─────────────────────────────────────────────────────────
+async function handleTTS(msg, KV, token) {
+  const text = msg.text?.trim();
+  if (!text || text.length < 1) return;
+  if (/^\s*$/.test(stripUnspeakable(text))) return;
+
+  const uid  = msg.from?.id || msg.chat.id;
+  const pref = await getTTSPref(KV, uid);
+  const gender = pref.gender || 'female';
+  const speed  = pref.speed  || 'x1';
+  const rate   = SPEED_RATES[speed] || '+0%';
+  const lang   = detectLang(text);
+  const voice  = getVoice(lang, gender);
+
+  // Build cache key (first 16 hex chars of SHA-256)
+  const rawKey   = `${voice}:${speed}:${text}`;
+  const keyBuf   = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawKey));
+  const cacheKey = Array.from(new Uint8Array(keyBuf)).slice(0, 8).map(b => b.toString(16).padStart(2,'0')).join('');
+
+  const keyboard = buildVoiceKeyboard(gender, speed);
+
+  // Show "recording voice" action
+  tg('sendChatAction', { chat_id: msg.chat.id, action: 'record_voice' }, token).catch(() => {});
+
+  try {
+    const cached = await getTTSCache(KV, cacheKey);
+    if (cached) {
+      await sendVoice(msg.chat.id, cached, token, {
+        caption: '🔈 Text to Voice Bot',
+        reply_to_message_id: msg.message_id,
+        reply_markup: keyboard,
+      });
+      return;
+    }
+
+    const audioBytes = await synthesizeEdgeTTS(text, voice, rate);
+    const result = await sendVoice(msg.chat.id, audioBytes, token, {
+      caption: '🔈 Text to Voice Bot',
+      reply_to_message_id: msg.message_id,
+      reply_markup: keyboard,
+    });
+
+    // Cache the file_id for reuse
+    const fileId = result?.voice?.file_id;
+    if (fileId) await setTTSCache(KV, cacheKey, fileId).catch(() => {});
+
+  } catch (err) {
+    console.error('TTS error:', err.message);
+    await tg('sendMessage', {
+      chat_id: msg.chat.id,
+      text: '⚠️ មានបញ្ហាក្នុងការបង្កើតសំឡេង។ សូមព្យាយាមម្តងទៀត។',
+      reply_to_message_id: msg.message_id,
+    }, token).catch(() => {});
+  }
+}
+
+// ─── Group management: Keyboards ───────────────────────────────────────────────
 function groupListKeyboard(groups) {
   return { inline_keyboard: Object.values(groups).map(g => [{ text: `👥 ${g.title}`, callback_data: `sel_${g.id}` }]) };
 }
-
 function mainMenuKeyboard(hasTimer) {
   const openBtn = hasTimer
     ? { text: '🔒 បិទ Group',  callback_data: 'action_close' }
@@ -93,26 +389,22 @@ function mainMenuKeyboard(hasTimer) {
     [{ text: '« ជ្រើស Group ផ្សេង', callback_data: 'back_groups' }],
   ]};
 }
-
 const durationKeyboard = { inline_keyboard: [
   [{ text: '5 នាទី', callback_data: 'open_5' }, { text: '10 នាទី', callback_data: 'open_10' }, { text: '15 នាទី', callback_data: 'open_15' }],
   [{ text: '30 នាទី', callback_data: 'open_30' }, { text: '1 ម៉ោង', callback_data: 'open_60' }, { text: '2 ម៉ោង', callback_data: 'open_120' }],
   [{ text: '⌨️ កំណត់ផ្ទាល់ខ្លួន', callback_data: 'open_custom' }],
   [{ text: '« ត្រឡប់', callback_data: 'back_control' }],
 ]};
-
 const membersKeyboard = { inline_keyboard: [
   [{ text: '🚫 Kick', callback_data: 'member_kick' }, { text: '⛔ Ban', callback_data: 'member_ban' }],
   [{ text: '🔇 Mute', callback_data: 'member_mute' }, { text: '🔊 Unmute', callback_data: 'member_unmute' }],
   [{ text: '« ត្រឡប់', callback_data: 'back_control' }],
 ]};
-
 const pinKeyboard = { inline_keyboard: [
   [{ text: '📌 Pin (វាយ Message ID)', callback_data: 'pin_request' }],
   [{ text: '📍 Unpin សារចុងក្រោយ', callback_data: 'pin_unpin' }],
   [{ text: '« ត្រឡប់', callback_data: 'back_control' }],
 ]};
-
 function scheduleKeyboard(s) {
   return { inline_keyboard: [
     [{ text: `🔓 ម៉ោងបើក: ${s.schedule.openTime  || '—'}`, callback_data: 'schedule_set_open'  }],
@@ -121,7 +413,6 @@ function scheduleKeyboard(s) {
     [{ text: '« ត្រឡប់', callback_data: 'back_control' }],
   ]};
 }
-
 function settingsKeyboard(s) {
   const notifyOn = s.autoNotify.openEnabled || s.autoNotify.closeEnabled;
   return { inline_keyboard: [
@@ -132,7 +423,6 @@ function settingsKeyboard(s) {
     [{ text: '« ត្រឡប់', callback_data: 'back_control' }],
   ]};
 }
-
 function notifyKeyboard(s) {
   return { inline_keyboard: [
     [{ text: `🔓 ជូនដំណឹងពេលបើក: ${s.autoNotify.openEnabled  ? '✅' : '❌'}`, callback_data: 'notify_toggle_open'  }],
@@ -142,19 +432,17 @@ function notifyKeyboard(s) {
     [{ text: '« ត្រឡប់', callback_data: 'menu_settings' }],
   ]};
 }
-
 function antiSpamKeyboard(s) {
   const a = s.antiSpam;
   return { inline_keyboard: [
     [{ text: `🤖 Anti-Spam: ${a.enabled ? '✅ ON' : '❌ OFF'}`, callback_data: 'antispam_toggle' }],
-    [{ text: `🔗 Block Links: ${a.noLinks ? '✅' : '❌'}`,      callback_data: 'antispam_toggle_links' }],
+    [{ text: `🔗 Block Links: ${a.noLinks ? '✅' : '❌'}`,       callback_data: 'antispam_toggle_links' }],
     [{ text: `↪️ Block Forwards: ${a.noForwards ? '✅' : '❌'}`, callback_data: 'antispam_toggle_forwards' }],
     [{ text: `📨 ដែនកំណត់: ${a.maxMessages} msg/${a.windowSeconds}s`, callback_data: 'antispam_cycle_limit' }],
     [{ text: '« ត្រឡប់', callback_data: 'menu_settings' }],
   ]};
 }
-
-function memberActionKeyboard(name, id) {
+function memberActionKeyboard() {
   return { inline_keyboard: [
     [{ text: '🚫 Kick', callback_data: 'do_kick' }, { text: '⛔ Ban', callback_data: 'do_ban' }],
     [{ text: '🔇 Mute 1ម៉ោង', callback_data: 'do_mute_60' }, { text: '🔇 Mute 24ម៉ោង', callback_data: 'do_mute_1440' }],
@@ -193,18 +481,14 @@ async function showDashboard(pid, msgId, gid, KV, token) {
 async function activateOpen(pid, msgId, gid, minutes, KV, token) {
   await delTimer(KV, gid);
   await openGroup(gid, token);
-
   const closeAt = Date.now() + minutes * 60000;
   const groups  = await getGroups(KV);
   const title   = groups[gid]?.title || String(gid);
   const s       = await getSettings(KV, gid);
-
   await setTimer(KV, gid, { closeAt, adminChatId: pid, menuMessageId: msgId, groupTitle: title });
-
   if (s.autoNotify.openEnabled) {
     try { await tg('sendMessage', { chat_id: gid, text: s.autoNotify.openText }, token); } catch {}
   }
-
   await tg('editMessageText', {
     chat_id: pid, message_id: msgId, parse_mode: 'Markdown',
     text: `✅ *Group បើករួចហើយ!*\n\n👥 Group: *${title}*\n⏱ រយៈពេល: *${formatDuration(minutes)}*\n🕐 នឹងបិទ នៅម៉ោង *${formatTime(closeAt)}*`,
@@ -217,10 +501,9 @@ async function activateOpen(pid, msgId, gid, minutes, KV, token) {
 
 // ─── Cron: auto-close expired + schedule ──────────────────────────────────────
 async function runCron(KV, token) {
-  const now   = Date.now();
-  const hhmm  = currentHHMM();
+  const now  = Date.now();
+  const hhmm = currentHHMM();
 
-  // Auto-close expired timers
   const timerList = await KV.list({ prefix: 'timer:' });
   for (const key of timerList.keys) {
     const timer = await KV.get(key.name, 'json');
@@ -242,13 +525,11 @@ async function runCron(KV, token) {
     }
   }
 
-  // Schedule open/close
   const groups = await getGroups(KV);
   for (const gid of Object.keys(groups)) {
     const s = await getSettings(KV, gid);
     const lastRunKey = `sched_last:${gid}`;
     const lastRun = await KV.get(lastRunKey);
-
     if (s.schedule.openTime === hhmm && lastRun !== `open:${hhmm}`) {
       await KV.put(lastRunKey, `open:${hhmm}`, { expirationTtl: 120 });
       try {
@@ -256,7 +537,6 @@ async function runCron(KV, token) {
         if (s.autoNotify.openEnabled) await tg('sendMessage', { chat_id: Number(gid), text: s.autoNotify.openText }, token);
       } catch {}
     }
-
     if (s.schedule.closeTime === hhmm && lastRun !== `close:${hhmm}`) {
       await KV.put(lastRunKey, `close:${hhmm}`, { expirationTtl: 120 });
       try {
@@ -268,7 +548,7 @@ async function runCron(KV, token) {
   }
 }
 
-// ─── Handle my_chat_member ────────────────────────────────────────────────────
+// ─── Handle my_chat_member ─────────────────────────────────────────────────────
 async function handleMyChatMember(update, KV) {
   const chat   = update.chat;
   const status = update.new_chat_member.status;
@@ -285,7 +565,6 @@ async function handleGroupMessage(msg, KV, token) {
   if (!['group', 'supergroup'].includes(chat.type)) return;
   const gid = chat.id;
 
-  // Auto-register
   const groups = await getGroups(KV);
   if (!groups[gid] || groups[gid].title !== chat.title) {
     groups[gid] = { id: gid, title: chat.title };
@@ -294,7 +573,6 @@ async function handleGroupMessage(msg, KV, token) {
 
   const s = await getSettings(KV, String(gid));
 
-  // Welcome new members
   if (msg.new_chat_members) {
     if (s.welcomeEnabled) {
       for (const member of msg.new_chat_members) {
@@ -309,43 +587,35 @@ async function handleGroupMessage(msg, KV, token) {
     return;
   }
 
-  // Anti-spam
   if (!s.antiSpam.enabled || !msg.from || msg.from.is_bot) return;
   const uid = msg.from.id;
-
-  // Skip admins
   const adminCheck = await isAdmin(gid, uid, token);
   if (adminCheck) return;
 
-  let shouldDelete = false;
-  let reason = '';
-
+  let shouldDelete = false, reason = '';
   if (s.antiSpam.noLinks && msg.text && /(https?:\/\/|t\.me\/|@\w{5,})/i.test(msg.text)) {
     shouldDelete = true; reason = '🔗 Link';
   }
   if (!shouldDelete && s.antiSpam.noForwards && (msg.forward_date || msg.forward_from || msg.forward_from_chat)) {
     shouldDelete = true; reason = '↪️ Forward';
   }
-
   if (!shouldDelete) {
     const spamKey = `spam:${gid}:${uid}`;
-    const raw  = await KV.get(spamKey, 'json') || [];
-    const now  = Date.now();
-    const win  = s.antiSpam.windowSeconds * 1000;
+    const raw   = await KV.get(spamKey, 'json') || [];
+    const now   = Date.now();
+    const win   = s.antiSpam.windowSeconds * 1000;
     const recent = raw.filter(t => now - t < win);
     recent.push(now);
     await KV.put(spamKey, JSON.stringify(recent), { expirationTtl: s.antiSpam.windowSeconds + 5 });
     if (recent.length > s.antiSpam.maxMessages) { shouldDelete = true; reason = '📨 Spam'; }
   }
-
   if (shouldDelete) {
     try {
       await tg('deleteMessage', { chat_id: gid, message_id: msg.message_id }, token);
-      const warn = await tg('sendMessage', {
+      await tg('sendMessage', {
         chat_id: gid, parse_mode: 'Markdown',
         text: `⚠️ សារត្រូវបានលុប (${reason}) — [${msg.from.first_name}](tg://user?id=${uid})`,
       }, token);
-      // Schedule warn deletion via KV flag (cron will clean up - or just leave it)
     } catch {}
   }
 }
@@ -353,37 +623,93 @@ async function handleGroupMessage(msg, KV, token) {
 // ─── Handle /start ────────────────────────────────────────────────────────────
 async function handleStart(msg, KV, token) {
   if (msg.chat.type !== 'private') return;
+
+  // New user notification
+  const uid = msg.from?.id;
+  if (uid) {
+    const known = await KV.get(`tts:known:${uid}`);
+    if (!known) {
+      await KV.put(`tts:known:${uid}`, '1', { expirationTtl: 365 * 86400 });
+      try {
+        const name = msg.from.first_name || 'Unknown';
+        const uname = msg.from.username ? `@${msg.from.username}` : 'គ្មាន username';
+        await tg('sendMessage', {
+          chat_id: ADMIN_ID,
+          parse_mode: 'HTML',
+          text: `🆕 <b>អ្នកប្រើប្រាស់ថ្មី!</b>\n\n👤 <b>ឈ្មោះ:</b> ${name}\n🔖 <b>Username:</b> ${uname}\n🪪 <b>ID:</b> <code>${uid}</code>`,
+        }, token);
+      } catch {}
+    }
+  }
+
+  await delSession(KV, msg.chat.id);
+  await delWaiting(KV, msg.chat.id);
+
+  const pref   = await getTTSPref(KV, msg.chat.id);
+  const gender = pref.gender || 'female';
+  const speed  = pref.speed  || 'x1';
+
+  await tg('sendMessage', {
+    chat_id: msg.chat.id,
+    parse_mode: 'HTML',
+    text: `🔊 <b>Text to Voice Bot</b>\n\n` +
+          `ផ្ញើ Text ណាមួយ → ខ្ញុំបំប្លែងទៅជាសំឡេង 🎙️\n\n` +
+          `✅ គាំទ្រភាសា: ខ្មែរ, English, Thai, ចិន, ជប៉ុន, ហ្វ្រ័ង្ស, ជាច្រើនទៀត!\n\n` +
+          `🎤 សំឡេង: <b>${gender === 'female' ? '👩 ស្រី' : '👨 ប្រុស'}</b>  ⚡ ល្បឿន: <b>${SPEED_LABELS[speed]}</b>`,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: `${gender === 'female' ? '✅ ' : ''}👩 សំឡេងស្រី`,  callback_data: 'voice:female' },
+          { text: `${gender === 'male'   ? '✅ ' : ''}👨 សំឡេងប្រុស`, callback_data: 'voice:male'   },
+        ],
+        Object.keys(SPEED_RATES).map(s => ({
+          text: (s === speed ? '✅ ' : '') + SPEED_LABELS[s],
+          callback_data: `set_speed:${s}`,
+        })),
+        [{ text: '🎛️ Manage Groups', callback_data: 'menu_groups' }],
+      ],
+    },
+  }, token);
+}
+
+// ─── Handle /manage ────────────────────────────────────────────────────────────
+async function handleManage(msg, KV, token) {
+  if (msg.chat.type !== 'private') return;
   await delSession(KV, msg.chat.id);
   await delWaiting(KV, msg.chat.id);
   await showGroupList(msg.chat.id, null, KV, token);
 }
 
-// ─── Handle private text input ────────────────────────────────────────────────
+// ─── Handle private text input ─────────────────────────────────────────────────
 async function handleTextInput(msg, KV, token) {
   if (msg.chat.type !== 'private') return;
-  if (!msg.text && !msg.photo && !msg.video && !msg.document && !msg.forward_from && !msg.forward_from_chat && !msg.forward_date) return;
   if (msg.text?.startsWith('/')) return;
 
   const pid   = msg.chat.id;
   const state = await getWaiting(KV, pid);
-  if (!state) return;
 
-  // Don't delete for broadcast
+  // No waiting state → TTS
+  if (!state) {
+    if (msg.text) await handleTTS(msg, KV, token);
+    return;
+  }
+
   if (state.type !== 'broadcast') {
     try { await tg('deleteMessage', { chat_id: pid, message_id: msg.message_id }, token); } catch {}
   }
 
   switch (state.type) {
+
     case 'custom_duration': {
       const minutes = parseInt(msg.text?.trim());
       if (isNaN(minutes) || minutes < 1 || minutes > 1440) {
-        const w = await tg('sendMessage', { chat_id: pid, parse_mode: 'Markdown', text: '⚠️ សូមវាយចំនួនគត់ រវាង *1 – 1440* នាទី។' }, token);
+        await tg('sendMessage', { chat_id: pid, parse_mode: 'Markdown', text: '⚠️ សូមវាយចំនួនគត់ រវាង *1 – 1440* នាទី។' }, token);
         return;
       }
       await delWaiting(KV, pid);
       try {
         await activateOpen(pid, state.menuMessageId, state.groupId, minutes, KV, token);
-      } catch (err) {
+      } catch {
         await tg('editMessageText', {
           chat_id: pid, message_id: state.menuMessageId, parse_mode: 'Markdown',
           text: '❌ មិនអាចបើក Group បានទេ។ ពិនិត្យ Admin + Restrict Members Permission។',
@@ -498,7 +824,7 @@ async function handleTextInput(msg, KV, token) {
       await tg('editMessageText', {
         chat_id: pid, message_id: state.menuMessageId, parse_mode: 'Markdown',
         text: `👤 *User: ${targetName}*\nID: \`${targetId}\`\n\nជ្រើសសកម្មភាព:`,
-        reply_markup: memberActionKeyboard(targetName, targetId),
+        reply_markup: memberActionKeyboard(),
       }, token);
       break;
     }
@@ -539,9 +865,58 @@ async function handleCallback(query, KV, token) {
   await tg('answerCallbackQuery', { callback_query_id: query.id }, token).catch(() => {});
   if (query.message.chat.type !== 'private') return;
 
+  // ── TTS: Gender selection ─────────────────────────────────────────────────────
+  if (data.startsWith('voice:')) {
+    const gender = data.slice(6);
+    if (!['male', 'female'].includes(gender)) return;
+    const pref = await getTTSPref(KV, uid);
+    pref.gender = gender;
+    await setTTSPref(KV, uid, pref);
+    const speed  = pref.speed || 'x1';
+    const label  = gender === 'female' ? '👩 សំឡេងស្រី' : '👨 សំឡេងប្រុស';
+    const newKb  = buildVoiceKeyboard(gender, speed);
+    try {
+      await tg('editMessageReplyMarkup', { chat_id: pid, message_id: msgId, reply_markup: newKb }, token);
+    } catch {}
+    await tg('answerCallbackQuery', {
+      callback_query_id: query.id,
+      text: `✅ បានប្តូរទៅ ${label}`,
+      show_alert: false,
+    }, token).catch(() => {});
+    return;
+  }
+
+  // ── TTS: Speed selection ──────────────────────────────────────────────────────
+  if (data.startsWith('set_speed:')) {
+    const speed = data.slice(10);
+    if (!SPEED_RATES[speed]) return;
+    const pref = await getTTSPref(KV, uid);
+    pref.speed = speed;
+    await setTTSPref(KV, uid, pref);
+    const gender = pref.gender || 'female';
+    const newKb  = buildVoiceKeyboard(gender, speed);
+    try {
+      await tg('editMessageReplyMarkup', { chat_id: pid, message_id: msgId, reply_markup: newKb }, token);
+    } catch {}
+    await tg('answerCallbackQuery', {
+      callback_query_id: query.id,
+      text: `✅ ល្បឿន: ${SPEED_LABELS[speed]}`,
+      show_alert: false,
+    }, token).catch(() => {});
+    return;
+  }
+
+  // ── Group management access from /start ───────────────────────────────────────
+  if (data === 'menu_groups') {
+    await delSession(KV, pid);
+    await delWaiting(KV, pid);
+    await showGroupList(pid, null, KV, token);
+    return;
+  }
+
+  // ── Group management ──────────────────────────────────────────────────────────
   const sess = await getSession(KV, pid);
 
-  // ── Select group ─────────────────────────────────────────────────────────────
   if (data.startsWith('sel_')) {
     const gid    = parseInt(data.slice(4));
     const groups = await getGroups(KV);
@@ -555,7 +930,6 @@ async function handleCallback(query, KV, token) {
     return;
   }
 
-  // ── Navigation ───────────────────────────────────────────────────────────────
   if (data === 'back_groups') {
     await delSession(KV, pid); await delWaiting(KV, pid);
     await showGroupList(pid, msgId, KV, token);
@@ -585,7 +959,7 @@ async function handleCallback(query, KV, token) {
   if (data.startsWith('open_') && !data.includes('custom')) {
     const minutes = parseInt(data.split('_')[1]);
     try { await activateOpen(pid, msgId, gid, minutes, KV, token); }
-    catch (err) {
+    catch {
       await tg('editMessageText', { chat_id: pid, message_id: msgId, parse_mode: 'Markdown',
         text: '❌ មិនអាចបើក Group បានទេ។ ពិនិត្យ Admin + Restrict Members Permission។',
         reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'back_control' }]] } }, token);
@@ -606,7 +980,7 @@ async function handleCallback(query, KV, token) {
     try {
       await closeGroup(gid, token);
       if (s.autoNotify.closeEnabled) await tg('sendMessage', { chat_id: gid, text: s.autoNotify.closeText }, token).catch(() => {});
-    } catch (err) {
+    } catch {
       await tg('editMessageText', { chat_id: pid, message_id: msgId, parse_mode: 'Markdown',
         text: '❌ មិនអាចបិទ Group បានទេ។',
         reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'back_control' }]] } }, token);
@@ -737,14 +1111,14 @@ async function handleCallback(query, KV, token) {
   if (data === 'schedule_set_open') {
     await setWaiting(KV, pid, { type: 'schedule_open', groupId: String(gid), menuMessageId: msgId });
     await tg('editMessageText', { chat_id: pid, message_id: msgId, parse_mode: 'Markdown',
-      text: '⏰ *ម៉ោងបើក Group*\n\nVayet ម៉ោង (HH:MM)\n_ឧទាហរណ៍: 08:00_',
+      text: '⏰ *ម៉ោងបើក Group*\n\nវាយ ម៉ោង (HH:MM)\n_ឧ. 08:00_',
       reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'menu_schedule' }]] } }, token);
     return;
   }
   if (data === 'schedule_set_close') {
     await setWaiting(KV, pid, { type: 'schedule_close', groupId: String(gid), menuMessageId: msgId });
     await tg('editMessageText', { chat_id: pid, message_id: msgId, parse_mode: 'Markdown',
-      text: '⏰ *ម៉ោងបិទ Group*\n\nVayet ម៉ោង (HH:MM)\n_ឧទាហរណ៍: 22:00_',
+      text: '⏰ *ម៉ោងបិទ Group*\n\nវាយ ម៉ោង (HH:MM)\n_ឧ. 22:00_',
       reply_markup: { inline_keyboard: [[{ text: '« ត្រឡប់', callback_data: 'menu_schedule' }]] } }, token);
     return;
   }
@@ -845,7 +1219,7 @@ async function handleCallback(query, KV, token) {
 }
 
 // ─── JSON response helper ──────────────────────────────────────────────────────
-const json = (data, status = 200) => new Response(JSON.stringify(data), {
+const jsonResp = (data, status = 200) => new Response(JSON.stringify(data), {
   status, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
 });
 
@@ -873,7 +1247,7 @@ function getUserFromInitData(initData) {
 // ─── Mini App API ──────────────────────────────────────────────────────────────
 async function apiGroups(request, env) {
   const initData = request.headers.get('X-Init-Data') || '';
-  if (!(await validateInitData(initData, env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+  if (!(await validateInitData(initData, env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Unauthorized' }, 401);
   const user   = getUserFromInitData(initData);
   const groups = await getGroups(env.KV);
   const timers = {};
@@ -885,56 +1259,56 @@ async function apiGroups(request, env) {
   await Promise.all(Object.values(groups).map(async g => {
     if (!user || await isAdmin(g.id, user.id, env.BOT_TOKEN)) filtered[g.id] = g;
   }));
-  return json({ ok: true, groups: filtered, timers });
+  return jsonResp({ ok: true, groups: filtered, timers });
 }
 
 async function apiOpen(request, env) {
   const body = await request.json();
-  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Unauthorized' }, 401);
   const user = getUserFromInitData(body.initData || '');
   const { groupId, minutes } = body;
-  if (!groupId || !minutes || minutes < 1 || minutes > 1440) return json({ ok: false, error: 'Invalid params' }, 400);
-  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return json({ ok: false, error: 'Not an admin' }, 403);
+  if (!groupId || !minutes || minutes < 1 || minutes > 1440) return jsonResp({ ok: false, error: 'Invalid params' }, 400);
+  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Not an admin' }, 403);
   await delTimer(env.KV, groupId);
   await openGroup(groupId, env.BOT_TOKEN);
-  const groups   = await getGroups(env.KV);
-  const s        = await getSettings(env.KV, String(groupId));
-  const closeAt  = Date.now() + minutes * 60000;
+  const groups  = await getGroups(env.KV);
+  const s       = await getSettings(env.KV, String(groupId));
+  const closeAt = Date.now() + minutes * 60000;
   await setTimer(env.KV, groupId, { closeAt, adminChatId: user?.id, menuMessageId: null, groupTitle: groups[groupId]?.title || String(groupId) });
   if (s.autoNotify.openEnabled) await tg('sendMessage', { chat_id: groupId, text: s.autoNotify.openText }, env.BOT_TOKEN).catch(() => {});
-  return json({ ok: true, closeAt });
+  return jsonResp({ ok: true, closeAt });
 }
 
 async function apiClose(request, env) {
   const body = await request.json();
-  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Unauthorized' }, 401);
   const user = getUserFromInitData(body.initData || '');
   const { groupId } = body;
-  if (!groupId) return json({ ok: false, error: 'Missing groupId' }, 400);
-  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return json({ ok: false, error: 'Not an admin' }, 403);
+  if (!groupId) return jsonResp({ ok: false, error: 'Missing groupId' }, 400);
+  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Not an admin' }, 403);
   const s = await getSettings(env.KV, String(groupId));
   await delTimer(env.KV, groupId);
   await closeGroup(groupId, env.BOT_TOKEN);
   if (s.autoNotify.closeEnabled) await tg('sendMessage', { chat_id: groupId, text: s.autoNotify.closeText }, env.BOT_TOKEN).catch(() => {});
-  return json({ ok: true });
+  return jsonResp({ ok: true });
 }
 
 async function apiSettings(request, env) {
   if (request.method === 'GET') {
     const url = new URL(request.url);
     const initData = request.headers.get('X-Init-Data') || '';
-    if (!(await validateInitData(initData, env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+    if (!(await validateInitData(initData, env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Unauthorized' }, 401);
     const groupId = url.searchParams.get('groupId');
-    if (!groupId) return json({ ok: false, error: 'Missing groupId' }, 400);
+    if (!groupId) return jsonResp({ ok: false, error: 'Missing groupId' }, 400);
     const s = await getSettings(env.KV, groupId);
-    return json({ ok: true, settings: s });
+    return jsonResp({ ok: true, settings: s });
   }
   const body = await request.json();
-  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Unauthorized' }, 401);
   const user = getUserFromInitData(body.initData || '');
   const { groupId, settings } = body;
-  if (!groupId) return json({ ok: false, error: 'Missing groupId' }, 400);
-  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return json({ ok: false, error: 'Not an admin' }, 403);
+  if (!groupId) return jsonResp({ ok: false, error: 'Missing groupId' }, 400);
+  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Not an admin' }, 403);
   const cur = await getSettings(env.KV, String(groupId));
   const merged = {
     ...cur,
@@ -945,33 +1319,33 @@ async function apiSettings(request, env) {
     schedule:   { ...cur.schedule,   ...(settings.schedule   || {}) },
   };
   await saveSettings(env.KV, String(groupId), merged);
-  return json({ ok: true });
+  return jsonResp({ ok: true });
 }
 
 async function apiBroadcast(request, env) {
   const body = await request.json();
-  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Unauthorized' }, 401);
   const user = getUserFromInitData(body.initData || '');
   const { groupId, text } = body;
-  if (!groupId || !text?.trim()) return json({ ok: false, error: 'Missing params' }, 400);
-  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return json({ ok: false, error: 'Not an admin' }, 403);
+  if (!groupId || !text?.trim()) return jsonResp({ ok: false, error: 'Missing params' }, 400);
+  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Not an admin' }, 403);
   await tg('sendMessage', { chat_id: groupId, text: text.trim() }, env.BOT_TOKEN);
-  return json({ ok: true });
+  return jsonResp({ ok: true });
 }
 
 async function apiStats(request, env) {
   const url = new URL(request.url);
   const initData = request.headers.get('X-Init-Data') || '';
-  if (!(await validateInitData(initData, env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+  if (!(await validateInitData(initData, env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Unauthorized' }, 401);
   const groupId = url.searchParams.get('groupId');
-  if (!groupId) return json({ ok: false, error: 'Missing groupId' }, 400);
+  if (!groupId) return jsonResp({ ok: false, error: 'Missing groupId' }, 400);
   try {
     const [count, timer, s] = await Promise.all([
       tg('getChatMemberCount', { chat_id: Number(groupId) }, env.BOT_TOKEN),
       getTimer(env.KV, groupId),
       getSettings(env.KV, groupId),
     ]);
-    return json({ ok: true, stats: {
+    return jsonResp({ ok: true, stats: {
       memberCount: count,
       isOpen: !!timer,
       closeAt: timer?.closeAt || null,
@@ -982,19 +1356,19 @@ async function apiStats(request, env) {
       scheduleOpen: s.schedule.openTime,
       scheduleClose: s.schedule.closeTime,
     }});
-  } catch(e) { return json({ ok: false, error: e.message }, 500); }
+  } catch(e) { return jsonResp({ ok: false, error: e.message }, 500); }
 }
 
 async function apiModerate(request, env) {
   const body = await request.json();
-  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return json({ ok: false, error: 'Unauthorized' }, 401);
+  if (!(await validateInitData(body.initData || '', env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Unauthorized' }, 401);
   const user = getUserFromInitData(body.initData || '');
   const { groupId, userId, action, minutes } = body;
-  if (!groupId || !userId || !action) return json({ ok: false, error: 'Missing params' }, 400);
-  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return json({ ok: false, error: 'Not an admin' }, 403);
+  if (!groupId || !userId || !action) return jsonResp({ ok: false, error: 'Missing params' }, 400);
+  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN))) return jsonResp({ ok: false, error: 'Not an admin' }, 403);
   const uid = Number(userId);
   if (action === 'kick') {
-    await tg('banChatMember', { chat_id: Number(groupId), user_id: uid }, env.BOT_TOKEN);
+    await tg('banChatMember',   { chat_id: Number(groupId), user_id: uid }, env.BOT_TOKEN);
     await tg('unbanChatMember', { chat_id: Number(groupId), user_id: uid, only_if_banned: true }, env.BOT_TOKEN);
   } else if (action === 'ban') {
     await tg('banChatMember', { chat_id: Number(groupId), user_id: uid }, env.BOT_TOKEN);
@@ -1004,7 +1378,7 @@ async function apiModerate(request, env) {
   } else if (action === 'unban') {
     await tg('unbanChatMember', { chat_id: Number(groupId), user_id: uid }, env.BOT_TOKEN);
   }
-  return json({ ok: true });
+  return jsonResp({ ok: true });
 }
 
 // ─── Main export ───────────────────────────────────────────────────────────────
@@ -1020,7 +1394,7 @@ export default {
     if (method === 'GET' && url.pathname === '/')
       return new Response(MINI_APP_HTML, { headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
 
-    // One-time webhook setup (call GET /setup to register webhook)
+    // One-time webhook setup
     if (method === 'GET' && url.pathname === '/setup') {
       const workerUrl = `${url.protocol}//${url.host}/webhook`;
       try {
@@ -1064,7 +1438,8 @@ export default {
           if (['group','supergroup'].includes(msg.chat?.type)) {
             await handleGroupMessage(msg, KV, token);
           } else if (msg.chat?.type === 'private') {
-            if (msg.text?.startsWith('/start')) await handleStart(msg, KV, token);
+            if (msg.text?.startsWith('/start'))  await handleStart(msg, KV, token);
+            else if (msg.text?.startsWith('/manage')) await handleManage(msg, KV, token);
             else await handleTextInput(msg, KV, token);
           }
         }
