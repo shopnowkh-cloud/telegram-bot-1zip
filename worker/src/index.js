@@ -1394,6 +1394,32 @@ export default {
     if (method === 'GET' && url.pathname === '/')
       return new Response(MINI_APP_HTML, { headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
 
+    // Diagnostic test endpoint
+    if (method === 'GET' && url.pathname === '/test') {
+      const log = [];
+      try {
+        const me = await tg('getMe', {}, env.BOT_TOKEN);
+        log.push({ step: 'getMe', ok: true, bot: me.username });
+      } catch (e) {
+        log.push({ step: 'getMe', ok: false, error: e.message });
+      }
+      try {
+        const kv = await env.KV.get('groups', 'json');
+        log.push({ step: 'KV', ok: true, groups: Object.keys(kv || {}).length });
+      } catch (e) {
+        log.push({ step: 'KV', ok: false, error: e.message });
+      }
+      try {
+        const info = await tg('getWebhookInfo', {}, env.BOT_TOKEN);
+        log.push({ step: 'webhook', ok: true, url: info.url, pending: info.pending_update_count, last_error: info.last_error_message });
+      } catch (e) {
+        log.push({ step: 'webhook', ok: false, error: e.message });
+      }
+      return new Response(JSON.stringify({ ok: true, log }, null, 2), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // One-time webhook setup
     if (method === 'GET' && url.pathname === '/setup') {
       const workerUrl = `${url.protocol}//${url.host}/webhook`;
@@ -1443,7 +1469,7 @@ export default {
             else await handleTextInput(msg, KV, token);
           }
         }
-      } catch (err) { console.error('Webhook error:', err.message); }
+      } catch (err) { console.error('Webhook error:', err.message, err.stack); }
       return new Response('OK');
     }
 
