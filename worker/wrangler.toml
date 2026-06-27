@@ -8,4 +8,4 @@ crons = ["* * * * *"]
 # KV namespace — ID filled in by deploy script
 [[kv_namespaces]]
 binding = "KV"
-id = "PLACEHOLDER"
+id = "d19e046ab1174544b19f96d92771fac0"
