@@ -840,6 +840,7 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
                 custom_emoji_id="5388632425314140043",
             )
         ],
+        icon_custom_emoji_id="5388632425314140043",
     )
     await query.answer([result], cache_time=300)
 
