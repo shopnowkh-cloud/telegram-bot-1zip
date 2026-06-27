@@ -1,4 +1,4 @@
-modules = ["python-3.12", "nix"]
+modules = ["python-3.12", "nix", "nodejs-20"]
 [nix]
 channel = "stable-25_05"
 packages = ["ffmpeg-full"]
@@ -17,15 +17,15 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Telegram Bot"
+args = "Deploy to Cloudflare"
 
 [[workflows.workflow]]
-name = "Telegram Bot"
+name = "Deploy to Cloudflare"
 author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python3 bot.py"
+args = "bash deploy.sh"
 
 [workflows.workflow.metadata]
 outputType = "console"

@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="km">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Group Manager</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Kantumruy+Pro:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root {
+  --bg:      var(--tg-theme-bg-color, #ffffff);
+  --bg2:     var(--tg-theme-secondary-bg-color, #f1f1f1);
+  --text:    var(--tg-theme-text-color, #222222);
+  --hint:    var(--tg-theme-hint-color, #999999);
+  --btn:     var(--tg-theme-button-color, #2481cc);
+  --btnText: var(--tg-theme-button-text-color, #ffffff);
+  --accent:  var(--tg-theme-accent-text-color, #2481cc);
+  --radius:  14px;
+  --safe:    env(safe-area-inset-bottom, 0px);
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--bg2);color:var(--text);font-family:'Kantumruy Pro',-apple-system,sans-serif;font-size:15px}
+
+.screen{display:none;flex-direction:column;height:100vh}
+.screen.active{display:flex}
+
+.hdr{background:var(--bg);padding:14px 16px 12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(0,0,0,.07);position:sticky;top:0;z-index:10;flex-shrink:0}
+.hdr-back{width:32px;height:32px;border-radius:50%;background:var(--bg2);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:20px;flex-shrink:0}
+.hdr h1{font-size:17px;font-weight:600;flex:1}
+.hdr-sub{font-size:11px;color:var(--hint);margin-top:1px}
+
+.scroll{flex:1;overflow-y:auto;padding:12px 16px;padding-bottom:calc(16px + var(--safe))}
+
+.card{background:var(--bg);border-radius:var(--radius);margin-bottom:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+
+/* Group list */
+.g-item{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;transition:background .15s}
+.g-item:active{background:var(--bg2)}
+.g-avatar{width:46px;height:46px;border-radius:50%;background:linear-gradient(135deg,var(--btn),var(--accent));display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;color:#fff;font-weight:700}
+.g-info{flex:1;min-width:0}
+.g-name{font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.g-sub{font-size:12px;margin-top:2px;color:var(--hint)}
+.chevron{color:var(--hint);font-size:20px;opacity:.4}
+.divider{height:1px;background:rgba(0,0,0,.06);margin:0 16px}
+
+/* Badges */
+.badge{display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600}
+.badge-open{background:rgba(48,200,94,.15);color:#1a9940}
+.badge-closed{background:rgba(0,0,0,.07);color:var(--hint)}
+
+/* Dashboard feature grid */
+.dash-hero{background:var(--bg);padding:20px 16px 16px;text-align:center;border-bottom:1px solid rgba(0,0,0,.06)}
+.dash-avatar{width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,var(--btn),var(--accent));display:flex;align-items:center;justify-content:center;font-size:26px;margin:0 auto 10px;color:#fff}
+.dash-title{font-size:18px;font-weight:700;margin-bottom:6px}
+.dash-status{font-size:13px}
+
+.feat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:14px 0}
+.feat-card{background:var(--bg);border-radius:var(--radius);padding:16px 14px;cursor:pointer;transition:transform .1s,box-shadow .1s;box-shadow:0 1px 3px rgba(0,0,0,.06);display:flex;flex-direction:column;gap:8px;position:relative}
+.feat-card:active{transform:scale(.97);box-shadow:none}
+.feat-icon{font-size:26px}
+.feat-label{font-size:14px;font-weight:600}
+.feat-desc{font-size:11px;color:var(--hint);line-height:1.4}
+.feat-badge{position:absolute;top:10px;right:10px;font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px}
+.feat-on{background:rgba(48,200,94,.15);color:#1a9940}
+.feat-off{background:rgba(0,0,0,.07);color:var(--hint)}
+
+/* Countdown */
+.countdown-box{background:rgba(48,200,94,.1);border-radius:var(--radius);padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between}
+.countdown-box.hidden{display:none}
+.cd-label{font-size:13px;color:#1a9940;font-weight:500}
+.cd-time{font-size:22px;font-weight:700;color:#1a9940;font-variant-numeric:tabular-nums}
+
+/* Buttons */
+.btn-row{display:flex;gap:10px;padding:14px 16px}
+.btn{flex:1;height:48px;border-radius:var(--radius);border:none;font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:opacity .15s,transform .1s;font-family:'Kantumruy Pro',sans-serif}
+.btn:active{opacity:.8;transform:scale(.97)}
+.btn-primary{background:var(--btn);color:var(--btnText)}
+.btn-danger{background:rgba(255,59,48,.12);color:#ff3b30}
+.btn-warn{background:rgba(255,149,0,.12);color:#e07800}
+.btn-outline{background:var(--bg2);color:var(--text);border:1.5px solid rgba(0,0,0,.1)}
+.btn-green{background:rgba(48,200,94,.15);color:#1a9940}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-full{width:100%;flex:none}
+
+/* Section label */
+.sec-label{font-size:11px;font-weight:600;color:var(--hint);text-transform:uppercase;letter-spacing:.5px;padding:16px 16px 8px}
+
+/* Duration grid */
+.dur-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:0 16px 16px}
+.dur-btn{height:44px;border-radius:10px;border:1.5px solid rgba(0,0,0,.08);background:var(--bg);font-size:14px;font-weight:600;cursor:pointer;color:var(--text);transition:all .15s;font-family:'Kantumruy Pro',sans-serif}
+.dur-btn:active,.dur-btn.sel{background:var(--btn);color:var(--btnText);border-color:var(--btn)}
+
+/* Inputs */
+.inp-wrap{padding:0 16px 14px}
+.inp{width:100%;height:48px;border-radius:var(--radius);border:1.5px solid rgba(0,0,0,.1);background:var(--bg);padding:0 14px;font-size:15px;color:var(--text);outline:none;transition:border-color .2s;font-family:'Kantumruy Pro',sans-serif}
+.inp:focus{border-color:var(--btn)}
+.inp::placeholder{color:var(--hint)}
+.textarea{width:100%;min-height:110px;border-radius:var(--radius);border:1.5px solid rgba(0,0,0,.1);background:var(--bg);padding:12px 14px;font-size:15px;color:var(--text);outline:none;resize:none;line-height:1.5;font-family:'Kantumruy Pro',sans-serif;transition:border-color .2s}
+.textarea:focus{border-color:var(--btn)}
+.textarea::placeholder{color:var(--hint)}
+.inp-hint{font-size:12px;color:var(--hint);padding:4px 16px 12px;line-height:1.5}
+
+/* Toggle row */
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;gap:12px}
+.toggle-info{flex:1}
+.toggle-title{font-size:15px;font-weight:500}
+.toggle-desc{font-size:12px;color:var(--hint);margin-top:2px}
+.toggle{width:48px;height:28px;border-radius:14px;background:rgba(0,0,0,.15);border:none;cursor:pointer;position:relative;transition:background .2s;flex-shrink:0}
+.toggle.on{background:#30c85e}
+.toggle::after{content:'';position:absolute;width:22px;height:22px;border-radius:50%;background:#fff;top:3px;left:3px;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.toggle.on::after{transform:translateX(20px)}
+
+/* Stats */
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:14px 0}
+.stat-box{background:var(--bg);border-radius:var(--radius);padding:16px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.stat-num{font-size:28px;font-weight:700;color:var(--btn)}
+.stat-lbl{font-size:12px;color:var(--hint);margin-top:4px}
+
+/* Moderation */
+.mod-tabs{display:flex;gap:6px;padding:14px 16px 6px}
+.mod-tab{flex:1;height:36px;border-radius:10px;border:1.5px solid rgba(0,0,0,.08);background:var(--bg);font-size:13px;font-weight:600;cursor:pointer;color:var(--text);transition:all .15s;font-family:'Kantumruy Pro',sans-serif}
+.mod-tab.sel{background:var(--btn);color:var(--btnText);border-color:var(--btn)}
+
+/* Empty */
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 30px;text-align:center;gap:12px}
+.empty-icon{font-size:52px;opacity:.4}
+.empty-title{font-size:17px;font-weight:600}
+.empty-desc{font-size:14px;color:var(--hint);line-height:1.5}
+
+/* Toast */
+.toast{position:fixed;bottom:calc(24px + var(--safe));left:50%;transform:translateX(-50%) translateY(80px);background:rgba(0,0,0,.82);color:#fff;border-radius:20px;padding:10px 20px;font-size:14px;font-weight:500;transition:transform .3s;z-index:999;white-space:nowrap;backdrop-filter:blur(10px)}
+.toast.show{transform:translateX(-50%) translateY(0)}
+
+/* Loader */
+.loader{display:flex;justify-content:center;padding:50px}
+.spinner{width:28px;height:28px;border:3px solid rgba(0,0,0,.1);border-top-color:var(--btn);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Info row inside card */
+.info-row{display:flex;align-items:center;justify-content:space-between;padding:13px 16px}
+.info-label{font-size:14px;color:var(--hint)}
+.info-val{font-size:14px;font-weight:600}
+</style>
+</head>
+<body>
+
+<!-- ══ 1. Group List ══════════════════════════════════════════════════════════ -->
+<div id="s-list" class="screen active">
+  <div class="hdr">
+    <div style="flex:1"><h1>ការគ្រប់គ្រង Group</h1></div>
+    <button class="btn" style="flex:none;width:auto;padding:0 14px;height:34px;font-size:13px;border-radius:20px;background:var(--bg2);color:var(--text);border:none" onclick="loadGroups()">🔄</button>
+  </div>
+  <div class="scroll">
+    <div id="group-list"></div>
+  </div>
+</div>
+
+<!-- ══ 2. Dashboard ═══════════════════════════════════════════════════════════ -->
+<div id="s-dash" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goList()">‹</button>
+    <div style="flex:1"><h1 id="dash-hdr-name"></h1></div>
+  </div>
+  <div class="scroll">
+    <div class="card">
+      <div class="dash-hero">
+        <div class="dash-avatar">👥</div>
+        <div class="dash-title" id="dash-title"></div>
+        <div class="dash-status" id="dash-status"></div>
+      </div>
+    </div>
+    <div class="feat-grid" id="feat-grid"></div>
+  </div>
+</div>
+
+<!-- ══ 3. Open/Close ══════════════════════════════════════════════════════════ -->
+<div id="s-openclose" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goDash()">‹</button>
+    <div style="flex:1"><h1>បើក / បិទ Group</h1></div>
+  </div>
+  <div class="scroll">
+    <div class="card">
+      <div id="countdown-box" class="countdown-box hidden" style="margin:16px 16px 0">
+        <div class="cd-label">⏱ នឹងបិទក្នុង</div>
+        <div class="cd-time" id="countdown-val">--:--</div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-open" onclick="showDuration()">🔓 បើក Group</button>
+        <button class="btn btn-danger"  id="btn-close" onclick="doClose()">🔒 បិទ</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 4. Duration Picker ═════════════════════════════════════════════════════ -->
+<div id="s-duration" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="showOpenClose()">‹</button>
+    <h1>ជ្រើសរយៈពេល</h1>
+  </div>
+  <div class="scroll">
+    <div class="sec-label">រយៈពេលដែលបានកំណត់ទុក</div>
+    <div class="dur-grid" id="dur-grid"></div>
+    <div class="divider" style="margin:0"></div>
+    <div class="sec-label">កំណត់ផ្ទាល់ខ្លួន</div>
+    <div class="inp-wrap">
+      <input class="inp" type="number" id="custom-min" placeholder="ចំនួននាទី (1–1440)" min="1" max="1440">
+    </div>
+    <div class="inp-wrap">
+      <button class="btn btn-primary btn-full" onclick="openCustom()">✅ បើក Group</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 5. Broadcast ═══════════════════════════════════════════════════════════ -->
+<div id="s-broadcast" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goDash()">‹</button>
+    <div style="flex:1">
+      <h1>📢 Broadcast</h1>
+      <div class="hdr-sub" id="bc-group-name"></div>
+    </div>
+  </div>
+  <div class="scroll">
+    <div class="sec-label">សារដែលចង់ផ្ញើ</div>
+    <div class="inp-wrap">
+      <textarea class="textarea" id="bc-text" placeholder="សរសេរសារ...&#10;&#10;គាំទ្រ Markdown:&#10;*bold*  _italic_  `code`"></textarea>
+    </div>
+    <div class="inp-hint">សារនឹងត្រូវបានផ្ញើទៅ Group ភ្លាមៗ</div>
+    <div class="inp-wrap">
+      <button class="btn btn-primary btn-full" onclick="doBroadcast()">📤 ផ្ញើ Broadcast</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 6. Stats ════════════════════════════════════════════════════════════════ -->
+<div id="s-stats" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goDash()">‹</button>
+    <div style="flex:1">
+      <h1>📊 Statistics</h1>
+      <div class="hdr-sub" id="stats-group-name"></div>
+    </div>
+  </div>
+  <div class="scroll">
+    <div id="stats-content"><div class="loader"><div class="spinner"></div></div></div>
+  </div>
+</div>
+
+<!-- ══ 7. Schedule ═════════════════════════════════════════════════════════════ -->
+<div id="s-schedule" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goDash()">‹</button>
+    <div style="flex:1">
+      <h1>⏰ Schedule</h1>
+      <div class="hdr-sub" id="sched-group-name"></div>
+    </div>
+  </div>
+  <div class="scroll">
+    <div class="sec-label">ម៉ោងបើក / បិទ Group ស្វ័យប្រវត្តិ (UTC+7)</div>
+    <div class="card">
+      <div class="toggle-row" style="flex-direction:column;align-items:flex-start;gap:6px">
+        <div style="font-size:13px;color:var(--hint);margin-bottom:2px">🔓 ម៉ោងបើក Group</div>
+        <input class="inp" type="time" id="sched-open" style="width:100%">
+      </div>
+      <div class="divider"></div>
+      <div class="toggle-row" style="flex-direction:column;align-items:flex-start;gap:6px">
+        <div style="font-size:13px;color:var(--hint);margin-bottom:2px">🔒 ម៉ោងបិទ Group</div>
+        <input class="inp" type="time" id="sched-close" style="width:100%">
+      </div>
+    </div>
+    <div class="inp-hint">ទុក trống ដើម្បីបិទ schedule នោះ</div>
+    <div class="btn-row">
+      <button class="btn btn-danger" onclick="clearSchedule()">🗑 លុប</button>
+      <button class="btn btn-primary" onclick="saveSchedule()">💾 រក្សាទុក</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 8. Auto-Notify ══════════════════════════════════════════════════════════ -->
+<div id="s-notify" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goDash()">‹</button>
+    <div style="flex:1">
+      <h1>🔔 Auto-Notify</h1>
+      <div class="hdr-sub" id="notify-group-name"></div>
+    </div>
+  </div>
+  <div class="scroll">
+    <div class="card">
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <div class="toggle-title">ជូនដំណឹងពេលបើក</div>
+          <div class="toggle-desc">ផ្ញើ message ពេល Group ត្រូវបានបើក</div>
+        </div>
+        <button class="toggle" id="tog-notify-open" onclick="toggleNotify('open')"></button>
+      </div>
+      <div class="divider"></div>
+      <div class="sec-label" style="padding-top:8px">សារបើក</div>
+      <div class="inp-wrap"><textarea class="textarea" id="notify-open-text" placeholder="សារពេលបើក Group..." style="min-height:80px"></textarea></div>
+      <div class="divider"></div>
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <div class="toggle-title">ជូនដំណឹងពេលបិទ</div>
+          <div class="toggle-desc">ផ្ញើ message ពេល Group ត្រូវបានបិទ</div>
+        </div>
+        <button class="toggle" id="tog-notify-close" onclick="toggleNotify('close')"></button>
+      </div>
+      <div class="divider"></div>
+      <div class="sec-label" style="padding-top:8px">សារបិទ</div>
+      <div class="inp-wrap"><textarea class="textarea" id="notify-close-text" placeholder="សារពេលបិទ Group..." style="min-height:80px"></textarea></div>
+    </div>
+    <div class="inp-wrap" style="padding-top:4px">
+      <button class="btn btn-primary btn-full" onclick="saveNotify()">💾 រក្សាទុក</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 9. Welcome Message ══════════════════════════════════════════════════════ -->
+<div id="s-welcome" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goDash()">‹</button>
+    <div style="flex:1">
+      <h1>👋 Welcome Message</h1>
+      <div class="hdr-sub" id="wel-group-name"></div>
+    </div>
+  </div>
+  <div class="scroll">
+    <div class="card">
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <div class="toggle-title">Welcome Message</div>
+          <div class="toggle-desc">ស្វាគមន៍ Member ថ្មីចូល Group</div>
+        </div>
+        <button class="toggle" id="tog-welcome" onclick="toggleWelcome()"></button>
+      </div>
+      <div class="divider"></div>
+      <div class="sec-label" style="padding-top:8px">សារស្វាគមន៍</div>
+      <div class="inp-wrap"><textarea class="textarea" id="welcome-text" placeholder="សារស្វាគមន៍..."></textarea></div>
+    </div>
+    <div class="inp-hint">
+      <strong>{name}</strong> = ឈ្មោះ Member&nbsp;&nbsp;|&nbsp;&nbsp;<strong>{group}</strong> = ឈ្មោះ Group<br>
+      គាំទ្រ Markdown: *bold* _italic_
+    </div>
+    <div class="inp-wrap">
+      <button class="btn btn-primary btn-full" onclick="saveWelcome()">💾 រក្សាទុក</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 10. Anti-Spam ══════════════════════════════════════════════════════════ -->
+<div id="s-antispam" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goDash()">‹</button>
+    <div style="flex:1">
+      <h1>🛡️ Anti-Spam</h1>
+      <div class="hdr-sub" id="spam-group-name"></div>
+    </div>
+  </div>
+  <div class="scroll">
+    <div class="card">
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <div class="toggle-title">Anti-Spam</div>
+          <div class="toggle-desc">Mute អ្នកដែលផ្ញើ message ច្រើនពេក</div>
+        </div>
+        <button class="toggle" id="tog-spam" onclick="toggleSpam('enabled')"></button>
+      </div>
+      <div class="divider"></div>
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <div class="toggle-title">Block Links</div>
+          <div class="toggle-desc">លុប message ដែលមាន link / @username</div>
+        </div>
+        <button class="toggle" id="tog-links" onclick="toggleSpam('noLinks')"></button>
+      </div>
+      <div class="divider"></div>
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <div class="toggle-title">Block Forwards</div>
+          <div class="toggle-desc">លុប message ដែល forward មក</div>
+        </div>
+        <button class="toggle" id="tog-fwd" onclick="toggleSpam('noForwards')"></button>
+      </div>
+      <div class="divider"></div>
+      <div class="sec-label" style="padding-top:8px">Rate Limit</div>
+      <div class="dur-grid" id="rate-grid" style="padding:0 16px 16px"></div>
+    </div>
+    <div class="inp-wrap" style="padding-top:4px">
+      <button class="btn btn-primary btn-full" onclick="saveSpam()">💾 រក្សាទុក</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 11. Moderation ═════════════════════════════════════════════════════════ -->
+<div id="s-moderate" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goDash()">‹</button>
+    <div style="flex:1">
+      <h1>🚫 Moderation</h1>
+      <div class="hdr-sub" id="mod-group-name"></div>
+    </div>
+  </div>
+  <div class="scroll">
+    <div class="mod-tabs">
+      <button class="mod-tab sel" id="tab-kick" onclick="selModTab('kick')">Kick</button>
+      <button class="mod-tab" id="tab-ban" onclick="selModTab('ban')">Ban</button>
+      <button class="mod-tab" id="tab-mute" onclick="selModTab('mute')">Mute</button>
+      <button class="mod-tab" id="tab-unban" onclick="selModTab('unban')">Unban</button>
+    </div>
+    <div class="card" style="margin-top:6px">
+      <div class="sec-label" style="padding-bottom:4px">User ID</div>
+      <div class="inp-wrap">
+        <input class="inp" type="number" id="mod-uid" placeholder="ឧ. 123456789">
+      </div>
+      <div class="inp-hint" id="mod-hint"></div>
+      <div id="mute-dur-wrap">
+        <div class="sec-label" style="padding-top:0;padding-bottom:4px">រយៈពេល Mute</div>
+        <div class="dur-grid" id="mute-dur-grid" style="padding:0 16px 16px"></div>
+      </div>
+      <div class="inp-wrap">
+        <button class="btn btn-danger btn-full" id="mod-action-btn" onclick="doModerate()">🚫 Kick</button>
+      </div>
+    </div>
+    <div class="card">
+      <div style="padding:12px 16px;font-size:13px;color:var(--hint);line-height:1.6">
+        💡 ដើម្បីស្វែងរក User ID: Forward message របស់ user ទៅ <a href="https://t.me/userinfobot" style="color:var(--btn)">@userinfobot</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const twa = window.Telegram?.WebApp;
+if (twa) { twa.ready(); twa.expand(); }
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let S = {
+  groups: {}, timers: {}, selectedId: null,
+  settings: null, cdInterval: null, modTab: 'kick', muteMins: 60,
+  spamDraft: null,
+};
+
+const DURATIONS = [
+  {label:'5 នាទី',val:5},{label:'10 នាទី',val:10},{label:'15 នាទី',val:15},
+  {label:'30 នាទី',val:30},{label:'1 ម៉ោង',val:60},{label:'2 ម៉ោង',val:120},
+];
+const RATE_PRESETS = [
+  {label:'3 / 5s', maxMessages:3, windowSeconds:5},
+  {label:'5 / 10s',maxMessages:5, windowSeconds:10},
+  {label:'10 / 10s',maxMessages:10,windowSeconds:10},
+  {label:'3 / 30s',maxMessages:3, windowSeconds:30},
+];
+const MUTE_OPTS = [
+  {label:'30 នាទី',val:30},{label:'1 ម៉ោង',val:60},
+  {label:'3 ម៉ោង',val:180},{label:'1 ថ្ងៃ',val:1440},
+];
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+const show = id => {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  window.scrollTo(0,0);
+};
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const haptic = t => twa?.HapticFeedback?.impactOccurred?.(t || 'light');
+const hapticOk  = () => twa?.HapticFeedback?.notificationOccurred?.('success');
+const hapticErr = () => twa?.HapticFeedback?.notificationOccurred?.('error');
+
+function toast(msg, dur = 2800) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), dur);
+}
+
+// ── API ────────────────────────────────────────────────────────────────────────
+async function api(path, body) {
+  const init = twa?.initData || '';
+  const opts = body
+    ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,initData:init})}
+    : {headers:{'X-Init-Data':init}};
+  const r = await fetch(path, opts);
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || 'Error');
+  return j;
+}
+
+// ── Group List ─────────────────────────────────────────────────────────────────
+async function loadGroups() {
+  const el = document.getElementById('group-list');
+  el.innerHTML = '<div class="loader"><div class="spinner"></div></div>';
+  show('s-list');
+  try {
+    const {groups, timers} = await api('/api/groups');
+    S.groups = groups; S.timers = timers;
+    renderGroupList();
+  } catch(e) {
+    el.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-title">មិនអាចទាញ</div><div class="empty-desc">${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderGroupList() {
+  const el = document.getElementById('group-list');
+  const list = Object.values(S.groups);
+  if (!list.length) {
+    el.innerHTML = `<div class="empty"><div class="empty-icon">👥</div><div class="empty-title">មិនទាន់មាន Group</div><div class="empty-desc">Add Bot ចូល Group ហើយ set ជា Admin</div></div>`;
+    return;
+  }
+  el.innerHTML = '<div class="card">' + list.map((g,i) => {
+    const isOpen = !!S.timers[g.id];
+    const badge = isOpen
+      ? '<span class="badge badge-open">🟢 បើក</span>'
+      : '<span class="badge badge-closed">⚫ បិទ</span>';
+    const div = i < list.length-1 ? '<div class="divider"></div>' : '';
+    return `<div class="g-item" onclick="selectGroup(${g.id})">
+      <div class="g-avatar">${esc(g.title[0]?.toUpperCase()||'?')}</div>
+      <div class="g-info"><div class="g-name">${esc(g.title)}</div><div class="g-sub">${badge}</div></div>
+      <div class="chevron">›</div>
+    </div>${div}`;
+  }).join('') + '</div>';
+}
+
+// ── Dashboard ──────────────────────────────────────────────────────────────────
+async function selectGroup(id) {
+  haptic();
+  S.selectedId = id;
+  S.settings = null;
+  await openDash();
+}
+
+async function openDash() {
+  const g = S.groups[S.selectedId];
+  if (!g) return show('s-list');
+  document.getElementById('dash-hdr-name').textContent = g.title;
+  document.getElementById('dash-title').textContent = g.title;
+  show('s-dash');
+  // Load settings in background
+  try {
+    const r = await api(`/api/settings?groupId=${S.selectedId}`);
+    S.settings = r.settings;
+  } catch {}
+  renderDash();
+}
+
+function renderDash() {
+  const g = S.groups[S.selectedId];
+  const t = S.timers?.[S.selectedId];
+  const s = S.settings;
+  const statusHtml = t
+    ? '<span class="badge badge-open" style="font-size:13px">🟢 Group កំពុងបើក</span>'
+    : '<span class="badge badge-closed" style="font-size:13px">⚫ Group បានបិទ</span>';
+  document.getElementById('dash-status').innerHTML = statusHtml;
+
+  const feats = [
+    { icon:'🔓', label:'Open / Close', desc: t ? 'Group កំពុងបើក' : 'Group បានបិទ', badge: t ? 'open' : 'closed', badgeText: t ? 'ON' : 'OFF', fn:'showOpenClose()' },
+    { icon:'📢', label:'Broadcast', desc:'ផ្ញើ message ទៅ Group', badge:null, fn:'showBroadcast()' },
+    { icon:'📊', label:'Statistics', desc:'ចំនួន Member + ស្ថានភាព', badge:null, fn:'showStats()' },
+    { icon:'⏰', label:'Schedule', desc: s ? (s.schedule.openTime||s.schedule.closeTime ? `${s.schedule.openTime||'—'} → ${s.schedule.closeTime||'—'}` : 'មិនទាន់ set') : '...', badge: s&&(s.schedule.openTime||s.schedule.closeTime)?'open':s?'closed':null, badgeText: s&&(s.schedule.openTime||s.schedule.closeTime)?'ON':'OFF', fn:'showSchedule()' },
+    { icon:'🔔', label:'Auto-Notify', desc: s ? ((s.autoNotify.openEnabled||s.autoNotify.closeEnabled)?'Notify enabled':'Notify disabled') : '...', badge: s&&(s.autoNotify.openEnabled||s.autoNotify.closeEnabled)?'open':'closed', badgeText: s&&(s.autoNotify.openEnabled||s.autoNotify.closeEnabled)?'ON':'OFF', fn:'showNotify()' },
+    { icon:'👋', label:'Welcome', desc: s ? (s.welcomeEnabled?'Welcome enabled':'Welcome disabled') : '...', badge: s&&s.welcomeEnabled?'open':'closed', badgeText: s&&s.welcomeEnabled?'ON':'OFF', fn:'showWelcome()' },
+    { icon:'🛡️', label:'Anti-Spam', desc: s ? (s.antiSpam.enabled?'Anti-spam enabled':'Anti-spam disabled') : '...', badge: s&&s.antiSpam.enabled?'open':'closed', badgeText: s&&s.antiSpam.enabled?'ON':'OFF', fn:'showAntispam()' },
+    { icon:'🚫', label:'Moderation', desc:'Kick / Ban / Mute', badge:null, fn:'showModerate()' },
+  ];
+
+  document.getElementById('feat-grid').innerHTML = feats.map(f => {
+    const badgeHtml = f.badge
+      ? `<span class="feat-badge ${f.badge==='open'?'feat-on':'feat-off'}">${f.badgeText}</span>`
+      : '';
+    return `<div class="feat-card" onclick="${f.fn}">
+      ${badgeHtml}
+      <div class="feat-icon">${f.icon}</div>
+      <div class="feat-label">${f.label}</div>
+      <div class="feat-desc">${f.desc}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Navigation helpers ─────────────────────────────────────────────────────────
+function goList() { haptic(); stopCd(); loadGroups(); }
+function goDash() { haptic(); stopCd(); openDash(); }
+
+// ── Open/Close ─────────────────────────────────────────────────────────────────
+function showOpenClose() {
+  haptic();
+  show('s-openclose');
+  renderOpenClose();
+}
+function renderOpenClose() {
+  const t = S.timers?.[S.selectedId];
+  document.getElementById('btn-open').textContent = t ? '🔄 ផ្លាស់ប្តូររយៈពេល' : '🔓 បើក Group';
+  if (t) startCd(t.closeAt); else stopCd();
+}
+// ── Countdown ──────────────────────────────────────────────────────────────────
+function startCd(closeAt) {
+  stopCd();
+  const box = document.getElementById('countdown-box');
+  const val = document.getElementById('countdown-val');
+  box.classList.remove('hidden');
+  const tick = () => {
+    const left = Math.max(0, closeAt - Date.now());
+    if (!left) { stopCd(); renderOpenClose(); return; }
+    const h = Math.floor(left/3600000), m = Math.floor((left%3600000)/60000), s = Math.floor((left%60000)/1000);
+    val.textContent = h ? `${p(h)}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
+  };
+  tick(); S.cdInterval = setInterval(tick, 1000);
+}
+function stopCd() {
+  if (S.cdInterval) { clearInterval(S.cdInterval); S.cdInterval = null; }
+  document.getElementById('countdown-box')?.classList.add('hidden');
+}
+const p = n => String(n).padStart(2,'0');
+
+// ── Duration picker ────────────────────────────────────────────────────────────
+function showDuration() {
+  haptic();
+  const grid = document.getElementById('dur-grid');
+  grid.innerHTML = DURATIONS.map(d =>
+    `<button class="dur-btn" onclick="openWithMin(${d.val})">${d.label}</button>`
+  ).join('');
+  document.getElementById('custom-min').value = '';
+  show('s-duration');
+}
+async function openWithMin(m) {
+  haptic('medium');
+  await doOpen(m);
+}
+async function openCustom() {
+  const v = parseInt(document.getElementById('custom-min').value);
+  if (!v || v < 1 || v > 1440) { toast('⚠️ 1 – 1440 នាទី'); return; }
+  await doOpen(v);
+}
+async function doOpen(minutes) {
+  try {
+    const r = await api('/api/open', {groupId: S.selectedId, minutes});
+    S.timers[S.selectedId] = {closeAt: r.closeAt};
+    const {groups, timers} = await api('/api/groups');
+    S.groups = groups; S.timers = timers;
+    hapticOk();
+    toast(`✅ Group បើក ${fmtDur(minutes)}`);
+    showOpenClose();
+  } catch(e) { hapticErr(); toast('❌ ' + e.message); }
+}
+async function doClose() {
+  haptic('medium');
+  try {
+    await api('/api/close', {groupId: S.selectedId});
+    const {groups, timers} = await api('/api/groups');
+    S.groups = groups; S.timers = timers;
+    hapticOk(); toast('🔒 Group បានបិទ');
+    renderOpenClose();
+  } catch(e) { hapticErr(); toast('❌ ' + e.message); }
+}
+function fmtDur(m) {
+  if (m < 60) return `${m} នាទី`;
+  const h = Math.floor(m/60), r = m%60;
+  return r ? `${h}ម៉ោង ${r}នាទី` : `${h} ម៉ោង`;
+}
+
+// ── Broadcast ──────────────────────────────────────────────────────────────────
+function showBroadcast() {
+  haptic();
+  document.getElementById('bc-group-name').textContent = S.groups[S.selectedId]?.title || '';
+  document.getElementById('bc-text').value = '';
+  show('s-broadcast');
+}
+async function doBroadcast() {
+  const text = document.getElementById('bc-text').value.trim();
+  if (!text) { toast('⚠️ សូមសរសេរសារ'); return; }
+  const btn = document.querySelector('#s-broadcast .btn-primary');
+  btn.disabled = true; btn.textContent = '⏳ កំពុងផ្ញើ...';
+  try {
+    await api('/api/broadcast', {groupId: S.selectedId, text});
+    hapticOk(); toast('✅ Broadcast ផ្ញើជោគជ័យ!');
+    document.getElementById('bc-text').value = '';
+  } catch(e) { hapticErr(); toast('❌ ' + e.message); }
+  btn.disabled = false; btn.textContent = '📤 ផ្ញើ Broadcast';
+}
+
+// ── Stats ──────────────────────────────────────────────────────────────────────
+async function showStats() {
+  haptic();
+  document.getElementById('stats-group-name').textContent = S.groups[S.selectedId]?.title || '';
+  document.getElementById('stats-content').innerHTML = '<div class="loader"><div class="spinner"></div></div>';
+  show('s-stats');
+  try {
+    const {stats: st} = await api(`/api/stats?groupId=${S.selectedId}`);
+    const openUntil = st.closeAt ? new Date(st.closeAt).toLocaleTimeString('km',{hour:'2-digit',minute:'2-digit'}) : '—';
+    document.getElementById('stats-content').innerHTML = `
+      <div class="stat-grid">
+        <div class="stat-box"><div class="stat-num">${st.memberCount}</div><div class="stat-lbl">👥 Member</div></div>
+        <div class="stat-box"><div class="stat-num">${st.isOpen?'🟢':'⚫'}</div><div class="stat-lbl">${st.isOpen?'Group បើក':'Group បិទ'}</div></div>
+      </div>
+      <div class="card">
+        <div class="info-row"><span class="info-label">⏰ Schedule</span><span class="info-val">${st.scheduleEnabled?`${st.scheduleOpen||'—'} → ${st.scheduleClose||'—'}`:'OFF'}</span></div>
+        <div class="divider"></div>
+        <div class="info-row"><span class="info-label">🔔 Auto-Notify</span><span class="info-val" style="color:${st.notifyEnabled?'#1a9940':'var(--hint)'}">${st.notifyEnabled?'ON':'OFF'}</span></div>
+        <div class="divider"></div>
+        <div class="info-row"><span class="info-label">👋 Welcome</span><span class="info-val" style="color:${st.welcomeEnabled?'#1a9940':'var(--hint)'}">${st.welcomeEnabled?'ON':'OFF'}</span></div>
+        <div class="divider"></div>
+        <div class="info-row"><span class="info-label">🛡️ Anti-Spam</span><span class="info-val" style="color:${st.antiSpamEnabled?'#1a9940':'var(--hint)'}">${st.antiSpamEnabled?'ON':'OFF'}</span></div>
+        ${st.isOpen&&st.closeAt?`<div class="divider"></div><div class="info-row"><span class="info-label">🔒 បិទម៉ោង</span><span class="info-val">${openUntil}</span></div>`:''}
+      </div>`;
+  } catch(e) {
+    document.getElementById('stats-content').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-title">មិនអាចទាញ</div><div class="empty-desc">${esc(e.message)}</div></div>`;
+  }
+}
+
+// ── Schedule ───────────────────────────────────────────────────────────────────
+async function showSchedule() {
+  haptic();
+  document.getElementById('sched-group-name').textContent = S.groups[S.selectedId]?.title || '';
+  show('s-schedule');
+  const s = S.settings || (await api(`/api/settings?groupId=${S.selectedId}`).then(r=>(S.settings=r.settings,r.settings)).catch(()=>null));
+  if (s) {
+    document.getElementById('sched-open').value  = s.schedule.openTime  || '';
+    document.getElementById('sched-close').value = s.schedule.closeTime || '';
+  }
+}
+async function saveSchedule() {
+  const openTime  = document.getElementById('sched-open').value  || null;
+  const closeTime = document.getElementById('sched-close').value || null;
+  try {
+    await api('/api/settings', {groupId: S.selectedId, settings: {schedule:{openTime,closeTime}}});
+    if (S.settings) { S.settings.schedule.openTime = openTime; S.settings.schedule.closeTime = closeTime; }
+    hapticOk(); toast('✅ Schedule រក្សាទុករួច!');
+    goDash();
+  } catch(e) { hapticErr(); toast('❌ ' + e.message); }
+}
+async function clearSchedule() {
+  document.getElementById('sched-open').value = '';
+  document.getElementById('sched-close').value = '';
+  try {
+    await api('/api/settings', {groupId: S.selectedId, settings: {schedule:{openTime:null,closeTime:null}}});
+    if (S.settings) { S.settings.schedule.openTime = null; S.settings.schedule.closeTime = null; }
+    hapticOk(); toast('🗑 Schedule ត្រូវបានលុប');
+    goDash();
+  } catch(e) { hapticErr(); toast('❌ ' + e.message); }
+}
+
+// ── Auto-Notify ────────────────────────────────────────────────────────────────
+async function showNotify() {
+  haptic();
+  document.getElementById('notify-group-name').textContent = S.groups[S.selectedId]?.title || '';
+  show('s-notify');
+  const s = S.settings || await api(`/api/settings?groupId=${S.selectedId}`).then(r=>(S.settings=r.settings,r.settings)).catch(()=>null);
+  if (s) {
+    setToggle('tog-notify-open',  s.autoNotify.openEnabled);
+    setToggle('tog-notify-close', s.autoNotify.closeEnabled);
+    document.getElementById('notify-open-text').value  = s.autoNotify.openText  || '';
+    document.getElementById('notify-close-text').value = s.autoNotify.closeText || '';
+  }
+}
+function toggleNotify(which) {
+  if (!S.settings) return;
+  if (which === 'open')  S.settings.autoNotify.openEnabled  = !S.settings.autoNotify.openEnabled;
+  if (which === 'close') S.settings.autoNotify.closeEnabled = !S.settings.autoNotify.closeEnabled;
+  setToggle('tog-notify-open',  S.settings.autoNotify.openEnabled);
+  setToggle('tog-notify-close', S.settings.autoNotify.closeEnabled);
+  haptic();
+}
+async function saveNotify() {
+  if (!S.settings) return;
+  S.settings.autoNotify.openText  = document.getElementById('notify-open-text').value.trim()  || S.settings.autoNotify.openText;
+  S.settings.autoNotify.closeText = document.getElementById('notify-close-text').value.trim() || S.settings.autoNotify.closeText;
+  try {
+    await api('/api/settings', {groupId: S.selectedId, settings: {autoNotify: S.settings.autoNotify}});
+    hapticOk(); toast('✅ Notify រក្សាទុករួច!');
+    goDash();
+  } catch(e) { hapticErr(); toast('❌ ' + e.message); }
+}
+
+// ── Welcome ────────────────────────────────────────────────────────────────────
+async function showWelcome() {
+  haptic();
+  document.getElementById('wel-group-name').textContent = S.groups[S.selectedId]?.title || '';
+  show('s-welcome');
+  const s = S.settings || await api(`/api/settings?groupId=${S.selectedId}`).then(r=>(S.settings=r.settings,r.settings)).catch(()=>null);
+  if (s) {
+    setToggle('tog-welcome', s.welcomeEnabled);
+    document.getElementById('welcome-text').value = s.welcomeText || '';
+  }
+}
+function toggleWelcome() {
+  if (!S.settings) return;
+  S.settings.welcomeEnabled = !S.settings.welcomeEnabled;
+  setToggle('tog-welcome', S.settings.welcomeEnabled);
+  haptic();
+}
+async function saveWelcome() {
+  if (!S.settings) return;
+  const text = document.getElementById('welcome-text').value.trim();
+  if (text) S.settings.welcomeText = text;
+  try {
+    await api('/api/settings', {groupId: S.selectedId, settings: {welcomeEnabled: S.settings.welcomeEnabled, welcomeText: S.settings.welcomeText}});
+    hapticOk(); toast('✅ Welcome រក្សាទុករួច!');
+    goDash();
+  } catch(e) { hapticErr(); toast('❌ ' + e.message); }
+}
+
+// ── Anti-Spam ──────────────────────────────────────────────────────────────────
+async function showAntispam() {
+  haptic();
+  document.getElementById('spam-group-name').textContent = S.groups[S.selectedId]?.title || '';
+  show('s-antispam');
+  const s = S.settings || await api(`/api/settings?groupId=${S.selectedId}`).then(r=>(S.settings=r.settings,r.settings)).catch(()=>null);
+  if (s) {
+    S.spamDraft = JSON.parse(JSON.stringify(s.antiSpam));
+    renderSpam();
+  }
+}
+function renderSpam() {
+  const a = S.spamDraft;
+  if (!a) return;
+  setToggle('tog-spam',  a.enabled);
+  setToggle('tog-links', a.noLinks);
+  setToggle('tog-fwd',   a.noForwards);
+  document.getElementById('rate-grid').innerHTML = RATE_PRESETS.map(p => {
+    const sel = p.maxMessages === a.maxMessages && p.windowSeconds === a.windowSeconds;
+    return `<button class="dur-btn${sel?' sel':''}" onclick="selRate(${p.maxMessages},${p.windowSeconds})">${p.label}</button>`;
+  }).join('');
+}
+function selRate(max, win) {
+  if (!S.spamDraft) return;
+  S.spamDraft.maxMessages = max; S.spamDraft.windowSeconds = win;
+  haptic(); renderSpam();
+}
+function toggleSpam(field) {
+  if (!S.spamDraft) return;
+  S.spamDraft[field] = !S.spamDraft[field];
+  haptic(); renderSpam();
+}
+async function saveSpam() {
+  if (!S.spamDraft) return;
+  try {
+    await api('/api/settings', {groupId: S.selectedId, settings: {antiSpam: S.spamDraft}});
+    if (S.settings) S.settings.antiSpam = S.spamDraft;
+    hapticOk(); toast('✅ Anti-Spam រក្សាទុករួច!');
+    goDash();
+  } catch(e) { hapticErr(); toast('❌ ' + e.message); }
+}
+
+// ── Moderation ─────────────────────────────────────────────────────────────────
+const MOD_HINTS = {
+  kick:  'Kick: យក user ចេញពី Group (unban ស្វ័យប្រវត្តិ)',
+  ban:   'Ban: ហាម user ចូល Group ជារៀងរហូត',
+  mute:  'Mute: ហាម user ផ្ញើ message ក្នុងរយៈពេល',
+  unban: 'Unban: លុបការ ban / ផ្តល់ permission ឡើងវិញ',
+};
+const MOD_BTN = {kick:'🚫 Kick',ban:'⛔ Ban',mute:'🔇 Mute',unban:'✅ Unban'};
+
+function showModerate() {
+  haptic();
+  document.getElementById('mod-group-name').textContent = S.groups[S.selectedId]?.title || '';
+  document.getElementById('mod-uid').value = '';
+  selModTab('kick');
+  renderMuteDur();
+  show('s-moderate');
+}
+function selModTab(tab) {
+  S.modTab = tab;
+  ['kick','ban','mute','unban'].forEach(t => {
+    document.getElementById('tab-'+t)?.classList.toggle('sel', t===tab);
+  });
+  document.getElementById('mod-hint').textContent = MOD_HINTS[tab] || '';
+  document.getElementById('mod-action-btn').textContent = MOD_BTN[tab] || tab;
+  document.getElementById('mute-dur-wrap').style.display = tab === 'mute' ? '' : 'none';
+}
+function renderMuteDur() {
+  document.getElementById('mute-dur-grid').innerHTML = MUTE_OPTS.map(o =>
+    `<button class="dur-btn${o.val===S.muteMins?' sel':''}" onclick="selMuteDur(${o.val})">${o.label}</button>`
+  ).join('');
+  document.getElementById('mute-dur-wrap').style.display = S.modTab === 'mute' ? '' : 'none';
+}
+function selMuteDur(v) { S.muteMins = v; haptic(); renderMuteDur(); }
+async function doModerate() {
+  const uid = document.getElementById('mod-uid').value.trim();
+  if (!uid || isNaN(uid)) { toast('⚠️ សូម enter User ID'); return; }
+  const btn = document.getElementById('mod-action-btn');
+  btn.disabled = true;
+  try {
+    await api('/api/moderate', {groupId: S.selectedId, userId: uid, action: S.modTab, minutes: S.muteMins});
+    hapticOk();
+    toast(`✅ ${MOD_BTN[S.modTab]} ជោគជ័យ!`);
+    document.getElementById('mod-uid').value = '';
+  } catch(e) { hapticErr(); toast('❌ ' + e.message); }
+  btn.disabled = false;
+}
+
+// ── Toggle helper ──────────────────────────────────────────────────────────────
+function setToggle(id, on) {
+  const el = document.getElementById(id);
+  if (el) el.classList.toggle('on', !!on);
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+loadGroups();
+</script>
+</body>
+</html>
