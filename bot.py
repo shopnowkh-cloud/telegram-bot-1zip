@@ -1,0 +1,869 @@
+import os
+import re
+import json
+import hashlib
+import threading
+import unicodedata
+import asyncio
+import logging
+from io import BytesIO
+from collections import OrderedDict
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import edge_tts
+import imageio_ffmpeg
+
+_FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
+
+from langdetect import detect as langdetect_detect, detect_langs, DetectorFactory
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineQueryResultVoice, constants
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, ContextTypes, filters
+from telegram.request import HTTPXRequest
+
+def strip_unspeakable(text: str) -> str:
+    result = []
+    for ch in text:
+        cat = unicodedata.category(ch)
+        if cat.startswith(('L', 'M', 'N', 'P', 'Z')):
+            result.append(ch)
+        elif ch in ('\n', '\r', '\t', ' '):
+            result.append(ch)
+    return ''.join(result)
+
+def has_speakable_content(text: str) -> bool:
+    return bool(re.search(r'\w', text, re.UNICODE))
+
+_FILE_ID_CACHE: OrderedDict[str, str] = OrderedDict()
+_CACHE_MAX = 200
+
+_AUDIO_STORE: OrderedDict[str, bytes] = OrderedDict()
+_AUDIO_STORE_MAX = 100
+
+def _store_audio(key: str, data: bytes):
+    if key not in _AUDIO_STORE:
+        if len(_AUDIO_STORE) >= _AUDIO_STORE_MAX:
+            _AUDIO_STORE.popitem(last=False)
+        _AUDIO_STORE[key] = data
+
+class _AudioHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith("/voice/"):
+            key  = self.path[len("/voice/"):]
+            data = _AUDIO_STORE.get(key)
+            if data:
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/ogg")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
+
+def _start_audio_server(port: int = 5000):
+    server = HTTPServer(("0.0.0.0", port), _AudioHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    logging.info(f"Audio server listening on port {port}")
+
+def _cache_get(key: str):
+    if key in _FILE_ID_CACHE:
+        _FILE_ID_CACHE.move_to_end(key)
+        return _FILE_ID_CACHE[key]
+    return None
+
+def _cache_set(key: str, file_id: str):
+    if key in _FILE_ID_CACHE:
+        _FILE_ID_CACHE.move_to_end(key)
+    else:
+        if len(_FILE_ID_CACHE) >= _CACHE_MAX:
+            _FILE_ID_CACHE.popitem(last=False)
+        _FILE_ID_CACHE[key] = file_id
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+
+DetectorFactory.seed = 0
+
+def _data_path(filename: str) -> str:
+    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    try:
+        open(local, "a").close()
+        return local
+    except OSError:
+        return os.path.join("/tmp", filename)
+
+_PREFS_FILE = _data_path("user_prefs.json")
+_user_prefs: dict = {}
+
+def _load_prefs():
+    global _user_prefs
+    try:
+        if os.path.exists(_PREFS_FILE):
+            with open(_PREFS_FILE, "r", encoding="utf-8") as f:
+                _user_prefs = json.load(f)
+    except Exception:
+        _user_prefs = {}
+
+def _save_prefs():
+    try:
+        with open(_PREFS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_user_prefs, f)
+    except Exception as e:
+        logging.warning(f"Could not save user prefs: {e}")
+
+def get_gender(user_id: int) -> str:
+    return _user_prefs.get(str(user_id), "female")
+
+def set_gender(user_id: int, gender: str):
+    _user_prefs[str(user_id)] = gender
+    _save_prefs()
+
+def get_speed(user_id: int) -> str:
+    speed = _user_prefs.get(f"{user_id}_speed", "x1")
+    if speed not in SPEED_RATES:
+        speed = "x1"
+        _user_prefs[f"{user_id}_speed"] = speed
+        _save_prefs()
+    return speed
+
+def set_speed(user_id: int, speed: str):
+    _user_prefs[f"{user_id}_speed"] = speed
+    _save_prefs()
+
+SPEED_RATES  = {"x0.5": "-50%", "x1": "+0%", "x1.5": "+50%", "x2": "+100%"}
+SPEED_LABELS = {"x0.5": "🐢 ល្បឿន x0.5", "x1": "▶️ ល្បឿន x1", "x1.5": "⚡ ល្បឿន x1.5", "x2": "🚀 ល្បឿន x2"}
+SPEED_EMOJI  = {"x0.5": "🐢", "x1": "▶️", "x1.5": "⚡", "x2": "🚀"}
+
+_load_prefs()
+
+ADMIN_ID = 5002402843
+_KNOWN_USERS_FILE = _data_path("known_users.json")
+_known_users: set = set()
+
+def _load_known_users():
+    global _known_users
+    try:
+        if os.path.exists(_KNOWN_USERS_FILE):
+            with open(_KNOWN_USERS_FILE, "r", encoding="utf-8") as f:
+                _known_users = set(json.load(f))
+    except Exception:
+        _known_users = set()
+
+def _save_known_users():
+    try:
+        with open(_KNOWN_USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(_known_users), f)
+    except Exception as e:
+        logging.warning(f"Could not save known users: {e}")
+
+def is_new_user(user_id: int) -> bool:
+    return str(user_id) not in _known_users
+
+def mark_user_known(user_id: int):
+    _known_users.add(str(user_id))
+    _save_known_users()
+
+async def notify_admin_new_user(bot, user):
+    try:
+        username = f"@{user.username}" if user.username else "គ្មាន username"
+        full_name = user.full_name or "គ្មានឈ្មោះ"
+        msg = (
+            f"🆕 <b>អ្នកប្រើប្រាស់ថ្មី!</b>\n\n"
+            f"👤 <b>ឈ្មោះ:</b> {full_name}\n"
+            f"🔖 <b>Username:</b> {username}\n"
+            f"🪪 <b>ID:</b> <code>{user.id}</code>"
+        )
+        await bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode="HTML")
+    except Exception as e:
+        logging.warning(f"Could not notify admin: {e}")
+
+_load_known_users()
+
+STYLE_MENU_BTN = "🎨 Style អក្សរ"
+
+def build_main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[STYLE_MENU_BTN]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+MALE_VOICES = {
+    "af":    "af-ZA-WillemNeural",
+    "am":    "am-ET-AmehaNeural",
+    "ar":    "ar-SA-HamedNeural",
+    "az":    "az-AZ-BabekNeural",
+    "bg":    "bg-BG-BorislavNeural",
+    "bn":    "bn-BD-PradeepNeural",
+    "bs":    "bs-BA-GoranNeural",
+    "ca":    "ca-ES-EnricNeural",
+    "cs":    "cs-CZ-AntoninNeural",
+    "cy":    "cy-GB-AledNeural",
+    "da":    "da-DK-JeppeNeural",
+    "de":    "de-DE-FlorianMultilingualNeural",
+    "el":    "el-GR-NestorasNeural",
+    "en":    "en-US-AndrewMultilingualNeural",
+    "es":    "es-ES-AlvaroNeural",
+    "et":    "et-EE-KertNeural",
+    "fa":    "fa-IR-FaridNeural",
+    "fi":    "fi-FI-HarriNeural",
+    "fil":   "fil-PH-AngeloNeural",
+    "fr":    "fr-FR-RemyMultilingualNeural",
+    "ga":    "ga-IE-ColmNeural",
+    "gl":    "gl-ES-RoiNeural",
+    "gu":    "gu-IN-NiranjanNeural",
+    "he":    "he-IL-AvriNeural",
+    "hi":    "hi-IN-MadhurNeural",
+    "hr":    "hr-HR-SreckoNeural",
+    "hu":    "hu-HU-TamasNeural",
+    "id":    "id-ID-ArdiNeural",
+    "is":    "is-IS-GunnarNeural",
+    "it":    "it-IT-GiuseppeMultilingualNeural",
+    "ja":    "ja-JP-KeitaNeural",
+    "jv":    "jv-ID-DimasNeural",
+    "ka":    "ka-GE-GiorgiNeural",
+    "kk":    "kk-KZ-DauletNeural",
+    "km":    "km-KH-PisethNeural",
+    "kn":    "kn-IN-GaganNeural",
+    "ko":    "ko-KR-HyunsuMultilingualNeural",
+    "lo":    "lo-LA-ChanthavongNeural",
+    "lt":    "lt-LT-LeonasNeural",
+    "lv":    "lv-LV-NilsNeural",
+    "mk":    "mk-MK-AleksandarNeural",
+    "ml":    "ml-IN-MidhunNeural",
+    "mn":    "mn-MN-BataaNeural",
+    "mr":    "mr-IN-ManoharNeural",
+    "ms":    "ms-MY-OsmanNeural",
+    "mt":    "mt-MT-JosephNeural",
+    "my":    "my-MM-ThihaNeural",
+    "nb":    "nb-NO-FinnNeural",
+    "ne":    "ne-NP-SagarNeural",
+    "nl":    "nl-NL-MaartenNeural",
+    "pl":    "pl-PL-MarekNeural",
+    "ps":    "ps-AF-GulNawazNeural",
+    "pt":    "pt-BR-AntonioNeural",
+    "ro":    "ro-RO-EmilNeural",
+    "ru":    "ru-RU-DmitryNeural",
+    "si":    "si-LK-SameeraNeural",
+    "sk":    "sk-SK-LukasNeural",
+    "sl":    "sl-SI-RokNeural",
+    "so":    "so-SO-MuuseNeural",
+    "sq":    "sq-AL-IlirNeural",
+    "sr":    "sr-RS-NicholasNeural",
+    "su":    "su-ID-JajangNeural",
+    "sv":    "sv-SE-MattiasNeural",
+    "sw":    "sw-KE-RafikiNeural",
+    "ta":    "ta-IN-ValluvarNeural",
+    "te":    "te-IN-MohanNeural",
+    "th":    "th-TH-NiwatNeural",
+    "tr":    "tr-TR-AhmetNeural",
+    "uk":    "uk-UA-OstapNeural",
+    "ur":    "ur-IN-SalmanNeural",
+    "uz":    "uz-UZ-SardorNeural",
+    "vi":    "vi-VN-NamMinhNeural",
+    "zh-CN": "zh-CN-YunyangNeural",
+    "zh-TW": "zh-TW-YunJheNeural",
+    "zu":    "zu-ZA-ThembaNeural",
+}
+
+FEMALE_VOICES = {
+    "af":    "af-ZA-AdriNeural",
+    "am":    "am-ET-MekdesNeural",
+    "ar":    "ar-SA-ZariyahNeural",
+    "az":    "az-AZ-BanuNeural",
+    "bg":    "bg-BG-KalinaNeural",
+    "bn":    "bn-BD-NabanitaNeural",
+    "bs":    "bs-BA-VesnaNeural",
+    "ca":    "ca-ES-JoanaNeural",
+    "cs":    "cs-CZ-VlastaNeural",
+    "cy":    "cy-GB-NiaNeural",
+    "da":    "da-DK-ChristelNeural",
+    "de":    "de-DE-SeraphinaMultilingualNeural",
+    "el":    "el-GR-AthinaNeural",
+    "en":    "en-US-AvaMultilingualNeural",
+    "es":    "es-ES-XimenaNeural",
+    "et":    "et-EE-AnuNeural",
+    "fa":    "fa-IR-DilaraNeural",
+    "fi":    "fi-FI-NooraNeural",
+    "fil":   "fil-PH-BlessicaNeural",
+    "fr":    "fr-FR-VivienneMultilingualNeural",
+    "ga":    "ga-IE-OrlaNeural",
+    "gl":    "gl-ES-SabelaNeural",
+    "gu":    "gu-IN-DhwaniNeural",
+    "he":    "he-IL-HilaNeural",
+    "hi":    "hi-IN-SwaraNeural",
+    "hr":    "hr-HR-GabrijelaNeural",
+    "hu":    "hu-HU-NoemiNeural",
+    "id":    "id-ID-GadisNeural",
+    "is":    "is-IS-GudrunNeural",
+    "it":    "it-IT-IsabellaNeural",
+    "ja":    "ja-JP-NanamiNeural",
+    "jv":    "jv-ID-SitiNeural",
+    "ka":    "ka-GE-EkaNeural",
+    "kk":    "kk-KZ-AigulNeural",
+    "km":    "km-KH-SreymomNeural",
+    "kn":    "kn-IN-SapnaNeural",
+    "ko":    "ko-KR-SunHiNeural",
+    "lo":    "lo-LA-KeomanyNeural",
+    "lt":    "lt-LT-OnaNeural",
+    "lv":    "lv-LV-EveritaNeural",
+    "mk":    "mk-MK-MarijaNeural",
+    "ml":    "ml-IN-SobhanaNeural",
+    "mn":    "mn-MN-YesuiNeural",
+    "mr":    "mr-IN-AarohiNeural",
+    "ms":    "ms-MY-YasminNeural",
+    "mt":    "mt-MT-GraceNeural",
+    "my":    "my-MM-NilarNeural",
+    "nb":    "nb-NO-PernilleNeural",
+    "ne":    "ne-NP-HemkalaNeural",
+    "nl":    "nl-NL-ColetteNeural",
+    "pl":    "pl-PL-ZofiaNeural",
+    "ps":    "ps-AF-LatifaNeural",
+    "pt":    "pt-BR-ThalitaMultilingualNeural",
+    "ro":    "ro-RO-AlinaNeural",
+    "ru":    "ru-RU-SvetlanaNeural",
+    "si":    "si-LK-ThiliniNeural",
+    "sk":    "sk-SK-ViktoriaNeural",
+    "sl":    "sl-SI-PetraNeural",
+    "so":    "so-SO-UbaxNeural",
+    "sq":    "sq-AL-AnilaNeural",
+    "sr":    "sr-RS-SophieNeural",
+    "su":    "su-ID-TutiNeural",
+    "sv":    "sv-SE-SofieNeural",
+    "sw":    "sw-KE-ZuriNeural",
+    "ta":    "ta-IN-PallaviNeural",
+    "te":    "te-IN-ShrutiNeural",
+    "th":    "th-TH-PremwadeeNeural",
+    "tr":    "tr-TR-EmelNeural",
+    "uk":    "uk-UA-PolinaNeural",
+    "ur":    "ur-IN-GulNeural",
+    "uz":    "uz-UZ-MadinaNeural",
+    "vi":    "vi-VN-HoaiMyNeural",
+    "zh-CN": "zh-CN-XiaoxiaoNeural",
+    "zh-TW": "zh-TW-HsiaoChenNeural",
+    "zu":    "zu-ZA-ThandoNeural",
+}
+
+LANG_NAMES = {
+    "af": "Afrikaans", "am": "Amharic (አማርኛ)", "ar": "Arabic (العربية)",
+    "az": "Azerbaijani", "bg": "Bulgarian", "bn": "Bengali (বাংলা)",
+    "bs": "Bosnian", "ca": "Catalan", "cs": "Czech", "cy": "Welsh",
+    "da": "Danish", "de": "German", "el": "Greek (Ελληνικά)",
+    "en": "English", "es": "Spanish", "et": "Estonian",
+    "fa": "Persian (فارسی)", "fi": "Finnish", "fil": "Filipino",
+    "fr": "French", "ga": "Irish", "gl": "Galician",
+    "gu": "Gujarati (ગુજરાતી)", "he": "Hebrew (עברית)", "hi": "Hindi (हिंदी)",
+    "hr": "Croatian", "hu": "Hungarian", "id": "Indonesian",
+    "is": "Icelandic", "it": "Italian", "ja": "Japanese (日本語)",
+    "jv": "Javanese", "ka": "Georgian (ქართული)", "kk": "Kazakh",
+    "km": "ខ្មែរ (Khmer)", "kn": "Kannada (ಕನ್ನಡ)", "ko": "Korean (한국어)",
+    "lo": "Lao (ລາວ)", "lt": "Lithuanian", "lv": "Latvian",
+    "mk": "Macedonian", "ml": "Malayalam (മലയാളം)", "mn": "Mongolian",
+    "mr": "Marathi (मराठी)", "ms": "Malay", "mt": "Maltese",
+    "my": "Myanmar (မြန်မာ)", "nb": "Norwegian", "ne": "Nepali (नेपाली)",
+    "nl": "Dutch", "pl": "Polish", "ps": "Pashto (پښتو)",
+    "pt": "Portuguese", "ro": "Romanian", "ru": "Russian (Русский)",
+    "si": "Sinhala (සිංහල)", "sk": "Slovak", "sl": "Slovenian",
+    "so": "Somali", "sq": "Albanian", "sr": "Serbian",
+    "su": "Sundanese", "sv": "Swedish", "sw": "Swahili",
+    "ta": "Tamil (தமிழ்)", "te": "Telugu (తెలుగు)", "th": "Thai (ภาษาไทย)",
+    "tr": "Turkish", "uk": "Ukrainian", "ur": "Urdu (اردو)",
+    "uz": "Uzbek", "vi": "Vietnamese", "zh-CN": "Chinese (中文简体)",
+    "zh-TW": "Chinese (中文繁體)", "zu": "Zulu",
+}
+
+NORMALIZE = {
+    "zh-cn": "zh-CN", "zh-tw": "zh-TW", "zh": "zh-CN",
+    "iw": "he", "no": "nb", "tl": "fil", "jw": "jv", "in": "id",
+}
+
+LANG_FALLBACK = {
+    "pa": "hi",
+    "or": "bn",
+    "hy": "en",
+}
+
+SCRIPT_MAP = [
+    (r'[\u1780-\u17FF]', 'km'),
+    (r'[\u0E00-\u0E7F]', 'th'),
+    (r'[\u0E80-\u0EFF]', 'lo'),
+    (r'[\u1000-\u109F]', 'my'),
+    (r'[\u1200-\u137F]', 'am'),
+    (r'[\u10A0-\u10FF]', 'ka'),
+    (r'[\u0530-\u058F]', 'hy'),
+    (r'[\u0590-\u05FF]', 'he'),
+    (r'[\u0900-\u097F]', 'hi'),
+    (r'[\u0980-\u09FF]', 'bn'),
+    (r'[\u0A00-\u0A7F]', 'pa'),
+    (r'[\u0A80-\u0AFF]', 'gu'),
+    (r'[\u0B00-\u0B7F]', 'or'),
+    (r'[\u0B80-\u0BFF]', 'ta'),
+    (r'[\u0C00-\u0C7F]', 'te'),
+    (r'[\u0C80-\u0CFF]', 'kn'),
+    (r'[\u0D00-\u0D7F]', 'ml'),
+    (r'[\u0D80-\u0DFF]', 'si'),
+    (r'[\u0600-\u06FF]', 'ar'),
+    (r'[\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]', 'ar'),
+    (r'[\u0400-\u04FF]', 'ru'),
+    (r'[\u0370-\u03FF]', 'el'),
+    (r'[\u1800-\u18AF]', 'mn'),
+    (r'[\uAC00-\uD7FF]', 'ko'),
+    (r'[\u3040-\u30FF]', 'ja'),
+    (r'[\u4E00-\u9FFF\u3400-\u4DBF]', 'zh-CN'),
+]
+
+_SEGMENT_RE = re.compile(
+    r'(?P<km>[\u1780-\u17FF]+)'
+    r'|(?P<th>[\u0E00-\u0E7F]+)'
+    r'|(?P<lo>[\u0E80-\u0EFF]+)'
+    r'|(?P<my>[\u1000-\u109F]+)'
+    r'|(?P<am>[\u1200-\u137F]+)'
+    r'|(?P<ka>[\u10A0-\u10FF]+)'
+    r'|(?P<he>[\u0590-\u05FF]+)'
+    r'|(?P<hi>[\u0900-\u097F]+)'
+    r'|(?P<bn>[\u0980-\u09FF]+)'
+    r'|(?P<pa>[\u0A00-\u0A7F]+)'
+    r'|(?P<gu>[\u0A80-\u0AFF]+)'
+    r'|(?P<ta>[\u0B80-\u0BFF]+)'
+    r'|(?P<te>[\u0C00-\u0C7F]+)'
+    r'|(?P<kn>[\u0C80-\u0CFF]+)'
+    r'|(?P<ml>[\u0D00-\u0D7F]+)'
+    r'|(?P<si>[\u0D80-\u0DFF]+)'
+    r'|(?P<ar>[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]+)'
+    r'|(?P<ru>[\u0400-\u04FF]+)'
+    r'|(?P<el>[\u0370-\u03FF]+)'
+    r'|(?P<mn_s>[\u1800-\u18AF]+)'
+    r'|(?P<ko>[\uAC00-\uD7FF]+)'
+    r'|(?P<ja>[\u3040-\u30FF]+)'
+    r'|(?P<zh>[\u4E00-\u9FFF\u3400-\u4DBF]+)'
+    r'|(?P<other>[^\u1780-\u17FF\u0E00-\u0EFF\u1000-\u109F\u1200-\u137F'
+    r'\u10A0-\u10FF\u0590-\u05FF\u0900-\u09FF\u0A00-\u0AFF\u0B80-\u0BFF'
+    r'\u0C00-\u0CFF\u0D00-\u0DFF\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF'
+    r'\uFE70-\uFEFF\u0400-\u04FF\u0370-\u03FF\u1800-\u18AF\uAC00-\uD7FF'
+    r'\u3040-\u30FF\u4E00-\u9FFF\u3400-\u4DBF]+)'
+)
+_SCRIPT_LANG = {
+    'km': 'km', 'th': 'th', 'lo': 'lo', 'my': 'my', 'am': 'am',
+    'ka': 'ka', 'he': 'he', 'hi': 'hi', 'bn': 'bn', 'pa': 'hi',
+    'gu': 'gu', 'ta': 'ta', 'te': 'te', 'kn': 'kn', 'ml': 'ml',
+    'si': 'si', 'ar': 'ar', 'ru': 'ru', 'el': 'el', 'mn_s': 'mn',
+    'ko': 'ko', 'ja': 'ja', 'zh': 'zh-CN',
+}
+
+def segment_text(text: str) -> list:
+    raw = []
+    for m in _SEGMENT_RE.finditer(text):
+        g = m.lastgroup
+        chunk = m.group()
+        if g == 'other':
+            raw.append((chunk, None))
+        else:
+            lang = _SCRIPT_LANG.get(g, 'en')
+            if g == 'ar':
+                try:
+                    d = NORMALIZE.get(langdetect_detect(chunk), langdetect_detect(chunk))
+                    if d in ('fa', 'ur', 'ps', 'ar'):
+                        lang = d
+                except Exception:
+                    pass
+            elif g == 'ru':
+                try:
+                    d = NORMALIZE.get(langdetect_detect(chunk), langdetect_detect(chunk))
+                    if d in ('ru', 'uk', 'bg', 'sr', 'mk', 'kk', 'mn'):
+                        lang = d
+                except Exception:
+                    pass
+            raw.append((chunk, lang))
+
+    resolved = []
+    for chunk, lang in raw:
+        if lang is not None:
+            resolved.append((chunk, lang))
+            continue
+        stripped = chunk.strip()
+        if not stripped:
+            if resolved:
+                resolved[-1] = (resolved[-1][0] + chunk, resolved[-1][1])
+            continue
+        has_latin_letters = bool(re.search(r'[a-zA-Z]', chunk))
+        if not has_latin_letters:
+            if resolved:
+                resolved[-1] = (resolved[-1][0] + chunk, resolved[-1][1])
+            else:
+                resolved.append((chunk, 'en'))
+            continue
+        detected = 'en'
+        if len(stripped) >= 4:
+            try:
+                langs = detect_langs(stripped)
+                if langs and langs[0].prob >= 0.65:
+                    detected = NORMALIZE.get(langs[0].lang, langs[0].lang)
+            except Exception:
+                pass
+        resolved.append((chunk, detected))
+
+    resolved = [(c, LANG_FALLBACK.get(l, l)) for c, l in resolved]
+
+    merged = []
+    for chunk, lang in resolved:
+        if merged and merged[-1][1] == lang:
+            merged[-1] = (merged[-1][0] + chunk, lang)
+        else:
+            merged.append([chunk, lang])
+
+    return [(c, l) for c, l in merged] if merged else [('', 'en')]
+
+def build_voice_keyboard(gender: str, speed: str) -> InlineKeyboardMarkup:
+    gender_btn = InlineKeyboardButton(
+        "👩 សំឡេងស្រី" if gender == "male" else "👨 សំឡេងប្រុស",
+        callback_data="voice:female" if gender == "male" else "voice:male",
+        style=constants.KeyboardButtonStyle.SUCCESS,
+    )
+    speed_btn = InlineKeyboardButton(
+        "ល្បឿន",
+        callback_data=f"speed:{speed}",
+        style=constants.KeyboardButtonStyle.PRIMARY,
+        icon_custom_emoji_id="5445284980978621387",
+    )
+    return InlineKeyboardMarkup([[gender_btn, speed_btn]])
+
+def detect_language(text: str) -> str:
+    for pattern, lang in SCRIPT_MAP:
+        if re.search(pattern, text):
+            if lang == 'ar':
+                try:
+                    detected = langdetect_detect(text)
+                    detected = NORMALIZE.get(detected, detected)
+                    if detected in ('fa', 'ur', 'ps', 'ar'):
+                        return detected
+                except Exception:
+                    pass
+            if lang == 'ru':
+                try:
+                    detected = langdetect_detect(text)
+                    detected = NORMALIZE.get(detected, detected)
+                    if detected in ('ru', 'uk', 'bg', 'sr', 'mk', 'kk', 'mn'):
+                        return detected
+                except Exception:
+                    pass
+            return lang
+
+    stripped = text.strip()
+    if len(stripped) < 15 or len(stripped.split()) < 3:
+        return 'en'
+
+    try:
+        langs = detect_langs(text)
+        if langs:
+            top = langs[0]
+            lang_code = NORMALIZE.get(top.lang, top.lang)
+            if top.prob >= 0.70:
+                return lang_code
+    except Exception:
+        pass
+
+    return 'en'
+
+_CHUNK_SIZE = 2000
+
+def _split_into_chunks(text: str, size: int = _CHUNK_SIZE) -> list:
+    if len(text) <= size:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= size:
+            chunks.append(text)
+            break
+        cut = -1
+        for sep in ['។', '. ', '! ', '? ', '\n']:
+            idx = text.rfind(sep, 0, size)
+            if idx > size // 2:
+                cut = idx + len(sep)
+                break
+        if cut == -1:
+            cut = text.rfind(' ', 0, size)
+        if cut <= 0:
+            cut = size
+        chunks.append(text[:cut])
+        text = text[cut:]
+    return chunks
+
+async def _synth_chunk_pcm(text: str, voice: str, rate: str = '+0%') -> bytes:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _FFMPEG, "-y", "-f", "mp3", "-i", "pipe:0",
+            "-ac", "1", "-ar", "48000", "-f", "s16le", "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        communicate = edge_tts.Communicate(text, voice, rate=rate, pitch="+5Hz")
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                proc.stdin.write(chunk["data"])
+        proc.stdin.close()
+        stdout, _ = await proc.communicate()
+        return stdout
+    except Exception as e:
+        logging.warning(f"Skipping chunk due to error: {e!r} | text={text[:30]!r}")
+        return b''
+
+async def _synth_segment_pcm(text: str, voice: str, lang: str = 'en', rate: str = '+0%') -> bytes:
+    text = strip_unspeakable(text).strip()
+    if not text or not has_speakable_content(text):
+        return b''
+    chunks = _split_into_chunks(text)
+    if len(chunks) == 1:
+        return await _synth_chunk_pcm(chunks[0], voice, rate=rate)
+    parts = []
+    for chunk in chunks:
+        pcm = await _synth_chunk_pcm(chunk, voice, rate=rate)
+        if pcm:
+            parts.append(pcm)
+    return b''.join(parts)
+
+async def _pcm_to_ogg(pcm: bytes) -> BytesIO:
+    proc = await asyncio.create_subprocess_exec(
+        _FFMPEG, "-y", "-f", "s16le", "-ac", "1", "-ar", "48000", "-i", "pipe:0",
+        "-c:a", "libopus", "-b:a", "128k", "-f", "ogg", "pipe:1",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate(input=pcm)
+    return BytesIO(stdout)
+
+async def synthesize_to_bytes(text: str, voice: str, lang: str = 'en', rate: str = '+0%') -> BytesIO:
+    pcm = await _synth_segment_pcm(text, voice, lang=lang, rate=rate)
+    return await _pcm_to_ogg(pcm)
+
+async def synthesize_mixed(segments: list, voice_map: dict, rate: str = '+0%') -> BytesIO:
+    tasks = [
+        _synth_segment_pcm(chunk, voice_map.get(lang) or voice_map.get('en'), lang=lang, rate=rate)
+        for chunk, lang in segments
+        if strip_unspeakable(chunk).strip() and has_speakable_content(strip_unspeakable(chunk))
+    ]
+    if not tasks:
+        return BytesIO(b'')
+    pcm_parts = await asyncio.gather(*tasks)
+    return await _pcm_to_ogg(b''.join(pcm_parts))
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logging.error(f"Exception while handling update: {context.error}", exc_info=context.error)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if is_new_user(user.id):
+        mark_user_known(user.id)
+        asyncio.create_task(notify_admin_new_user(context.bot, user))
+    last_name = user.last_name or user.first_name or "បងប្អូន"
+    await update.message.reply_text(
+        f'<tg-emoji emoji-id="5472055112702629499">👋</tg-emoji> <b>សួស្តី</b> {last_name}\n\n'
+        '<b>ខ្ញុំជា Text to voice bot</b>\n\n'
+        '<tg-emoji emoji-id="5471978009449731768">👉</tg-emoji><i>គ្រាន់តែ សរសេរអក្សរណាមួយ ហើយ ខ្ញុំនឹងបំប្លែងជាសំឡេងដោយស្វ័យប្រវត្តិ។</i>',
+        parse_mode='HTML',
+        message_effect_id="5104841245755180586",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+async def handle_gender_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    gender = query.data.split(":")[1]
+    set_gender(query.from_user.id, gender)
+    speed = get_speed(query.from_user.id)
+    label = "👩 សំឡេងស្រី" if gender == "female" else "👨 សំឡេងប្រុស"
+    conf_text = f'<tg-emoji emoji-id="6217467173917429904">✅</tg-emoji> <b>បានប្តូរទៅ {label}</b>'
+    if query.message.voice:
+        await query.message.reply_text(conf_text, parse_mode='HTML')
+    else:
+        await query.edit_message_text(conf_text, parse_mode='HTML')
+
+def build_speed_select_keyboard(current_speed: str = "x1") -> InlineKeyboardMarkup:
+    speeds = ["x0.5", "x1", "x1.5", "x2"]
+    buttons = [
+        InlineKeyboardButton(
+            s,
+            callback_data=f"set_speed:{s}",
+            style=constants.KeyboardButtonStyle.SUCCESS if s == current_speed else constants.KeyboardButtonStyle.PRIMARY,
+        )
+        for s in speeds
+    ]
+    return InlineKeyboardMarkup([buttons])
+
+async def handle_speed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    current_speed = get_speed(query.from_user.id)
+    await query.message.reply_text(
+        "<b>ជ្រើសរើសល្បឿនសំឡេង:</b>",
+        parse_mode="HTML",
+        reply_markup=build_speed_select_keyboard(current_speed)
+    )
+
+async def handle_set_speed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    new_speed = query.data.split(":")[1]
+    set_speed(query.from_user.id, new_speed)
+    await query.answer()
+    await query.message.delete()
+    await query.message.reply_text(
+        f'<tg-emoji emoji-id="6217467173917429904">✅</tg-emoji> <b>បានផ្លាស់ប្តូរល្បឿនទៅ {new_speed}</b>',
+        parse_mode="HTML"
+    )
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
+    user = update.effective_user
+    if is_new_user(user.id):
+        mark_user_known(user.id)
+        asyncio.create_task(notify_admin_new_user(context.bot, user))
+
+    text = update.message.text.strip()
+
+    segments = segment_text(text)
+    is_mixed = len(segments) > 1
+
+    gender = get_gender(update.effective_user.id)
+    speed  = get_speed(update.effective_user.id)
+    rate   = SPEED_RATES[speed]
+    vm = MALE_VOICES if gender == "male" else FEMALE_VOICES
+
+    if is_mixed:
+        cache_key = f"mixed:{gender}:{speed}:{text}"
+    else:
+        lang = segments[0][1]
+        voice = vm.get(lang) or vm.get('en')
+        cache_key = f"{voice}:{speed}:{text}"
+
+    cached_file_id = _cache_get(cache_key)
+
+    logging.info(f"Segments: {[(c[:12]+'…' if len(c)>12 else c, l) for c,l in segments]} | Speed: {speed} | Cache: {'HIT' if cached_file_id else 'MISS'}")
+
+    keyboard = build_voice_keyboard(gender, speed)
+
+    try:
+        if cached_file_id:
+            await update.message.reply_voice(
+                voice=cached_file_id,
+                caption='<tg-emoji emoji-id="5388632425314140043">🔈</tg-emoji> @limsovannradybot',
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        else:
+            asyncio.create_task(
+                context.bot.send_chat_action(
+                    update.effective_chat.id,
+                    constants.ChatAction.RECORD_VOICE
+                )
+            )
+            if is_mixed:
+                audio_buf = await synthesize_mixed(segments, vm, rate=rate)
+            else:
+                audio_buf = await synthesize_to_bytes(text, voice, lang=lang, rate=rate)
+
+            msg = await update.message.reply_voice(
+                voice=audio_buf,
+                caption='<tg-emoji emoji-id="5388632425314140043">🔈</tg-emoji> @limsovannradybot',
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            _cache_set(cache_key, msg.voice.file_id)
+    except Exception as e:
+        logging.error(f"Error synthesizing voice: {e}")
+        await update.message.reply_text(
+            "⚠️ មានបញ្ហាក្នុងការបង្កើតសំឡេង។ សូមព្យាយាមម្តងទៀត។",
+        )
+
+async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.inline_query
+    text  = (query.query or "").strip()
+
+    if not text or not has_speakable_content(text):
+        await query.answer([], cache_time=5)
+        return
+
+    user_id  = query.from_user.id
+    gender   = get_gender(user_id)
+    speed    = get_speed(user_id)
+    rate     = SPEED_RATES[speed]
+    vm       = MALE_VOICES if gender == "male" else FEMALE_VOICES
+
+    segments = segment_text(text)
+    is_mixed = len(segments) > 1
+
+    if is_mixed:
+        cache_key = f"inline:mixed:{gender}:{speed}:{text}"
+    else:
+        lang  = segments[0][1]
+        voice = vm.get(lang) or vm.get('en')
+        cache_key = f"inline:{voice}:{speed}:{text}"
+
+    audio_key = hashlib.md5(cache_key.encode()).hexdigest()
+
+    if audio_key not in _AUDIO_STORE:
+        try:
+            if is_mixed:
+                audio_buf = await synthesize_mixed(segments, vm, rate=rate)
+            else:
+                audio_buf = await synthesize_to_bytes(text, voice, lang=lang, rate=rate)
+            _store_audio(audio_key, audio_buf.getvalue())
+        except Exception as e:
+            logging.error(f"Inline TTS error: {e}")
+            await query.answer([], cache_time=5)
+            return
+
+    public_host = os.environ.get("REPLIT_DEV_DOMAIN", "")
+    if not public_host:
+        await query.answer([], cache_time=5)
+        return
+    voice_url = f"https://{public_host}/voice/{audio_key}"
+    title = text if len(text) <= 50 else text[:50] + "…"
+
+    result = InlineQueryResultVoice(
+        id="tts_1",
+        voice_url=voice_url,
+        title=title,
+        caption='<tg-emoji emoji-id="5388632425314140043">🔈</tg-emoji> @limsovannradybot',
+        parse_mode="HTML",
+    )
+    await query.answer([result], cache_time=300)
+
+
+def create_app():
+    token = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN or BOT_TOKEN environment variable must be set")
+    request = HTTPXRequest(
+        connection_pool_size=32,
+        read_timeout=60,
+        write_timeout=60,
+        connect_timeout=5,
+        http_version="2",
+    )
+    application = (
+        ApplicationBuilder()
+        .token(token)
+        .request(request)
+        .concurrent_updates(True)
+        .build()
+    )
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(handle_gender_callback, pattern="^voice:"))
+    application.add_handler(CallbackQueryHandler(handle_speed_callback, pattern="^speed:"))
+    application.add_handler(CallbackQueryHandler(handle_set_speed_callback, pattern="^set_speed:"))
+    application.add_handler(InlineQueryHandler(handle_inline_query))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_error_handler(error_handler)
+    return application
+
+if __name__ == "__main__":
+    _start_audio_server(port=5000)
+    create_app().run_polling(drop_pending_updates=True, timeout=30)
