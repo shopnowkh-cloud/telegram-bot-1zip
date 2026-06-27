@@ -602,13 +602,27 @@ async def _synth_chunk_pcm(text: str, voice: str, rate: str = '+0%') -> bytes:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        communicate = edge_tts.Communicate(text, voice, rate=rate, pitch="+5Hz")
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                proc.stdin.write(chunk["data"])
-        proc.stdin.close()
-        stdout, _ = await proc.communicate()
-        return stdout
+
+        async def _feed_stdin():
+            try:
+                communicate = edge_tts.Communicate(text, voice, rate=rate, pitch="+5Hz")
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        proc.stdin.write(chunk["data"])
+                        await proc.stdin.drain()
+            except Exception as e:
+                logging.warning(f"edge-tts stream error: {e!r}")
+            finally:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+
+        feed_task = asyncio.create_task(_feed_stdin())
+        stdout_data = await proc.stdout.read()
+        await feed_task
+        await proc.wait()
+        return stdout_data
     except Exception as e:
         logging.warning(f"Skipping chunk due to error: {e!r} | text={text[:30]!r}")
         return b''
@@ -652,6 +666,17 @@ async def synthesize_mixed(segments: list, voice_map: dict, rate: str = '+0%') -
         return BytesIO(b'')
     pcm_parts = await asyncio.gather(*tasks)
     return await _pcm_to_ogg(b''.join(pcm_parts))
+
+async def _keep_chat_action(bot, chat_id, action, stop: asyncio.Event):
+    while not stop.is_set():
+        try:
+            await bot.send_chat_action(chat_id, action)
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(asyncio.shield(stop.wait()), timeout=4.0)
+        except asyncio.TimeoutError:
+            pass
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logging.error(f"Exception while handling update: {context.error}", exc_info=context.error)
@@ -758,16 +783,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=keyboard,
             )
         else:
+            stop_action = asyncio.Event()
             asyncio.create_task(
-                context.bot.send_chat_action(
+                _keep_chat_action(
+                    context.bot,
                     update.effective_chat.id,
-                    constants.ChatAction.RECORD_VOICE
+                    constants.ChatAction.RECORD_VOICE,
+                    stop_action,
                 )
             )
-            if is_mixed:
-                audio_buf = await synthesize_mixed(segments, vm, rate=rate)
-            else:
-                audio_buf = await synthesize_to_bytes(text, voice, lang=lang, rate=rate)
+            try:
+                if is_mixed:
+                    audio_buf = await synthesize_mixed(segments, vm, rate=rate)
+                else:
+                    audio_buf = await synthesize_to_bytes(text, voice, lang=lang, rate=rate)
+            finally:
+                stop_action.set()
 
             msg = await update.message.reply_voice(
                 voice=audio_buf,
