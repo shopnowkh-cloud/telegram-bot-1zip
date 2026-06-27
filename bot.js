@@ -1,5 +1,6 @@
 const { TelegramBot } = require('node-telegram-bot-api');
 const fs = require('fs');
+const { spawn } = require('child_process');
 const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
 
 const TOKEN = process.env.BOT_TOKEN;
@@ -209,7 +210,27 @@ function stripUnspeakable(text) {
     .trim();
 }
 
-// ─── TTS: Microsoft Edge Neural TTS synthesis ─────────────────────────────────
+// ─── TTS: Convert WEBM buffer → OGG/Opus via ffmpeg (in-memory) ───────────────
+function webmToOgg(webmBuffer) {
+  return new Promise((resolve, reject) => {
+    const ff = spawn('ffmpeg', [
+      '-i', 'pipe:0',
+      '-c:a', 'libopus',
+      '-b:a', '48k',
+      '-f', 'ogg',
+      'pipe:1',
+    ]);
+    const chunks = [];
+    ff.stdout.on('data', c => chunks.push(c));
+    ff.stdout.on('end', () => resolve(Buffer.concat(chunks)));
+    ff.stderr.on('data', () => {});
+    ff.on('error', reject);
+    ff.stdin.write(webmBuffer);
+    ff.stdin.end();
+  });
+}
+
+// ─── TTS: Microsoft Edge Neural TTS synthesis → OGG/Opus voice message ────────
 async function synthesizeTTS(text, voiceName, speed = 'x1') {
   const cleanText = stripUnspeakable(text);
   if (!cleanText) throw new Error('No speakable text');
@@ -217,18 +238,19 @@ async function synthesizeTTS(text, voiceName, speed = 'x1') {
   const rate = SPEED_RATES[speed] || '+0%';
 
   const tts = new MsEdgeTTS();
-  await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+  await tts.setMetadata(voiceName, OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
 
   const { audioStream } = await tts.toStream(cleanText, { rate });
 
-  const chunks = [];
+  const webmChunks = [];
   await new Promise((resolve, reject) => {
-    audioStream.on('data', chunk => chunks.push(chunk));
+    audioStream.on('data', chunk => webmChunks.push(chunk));
     audioStream.on('end', resolve);
     audioStream.on('error', reject);
   });
 
-  return Buffer.concat(chunks);
+  const webmBuffer = Buffer.concat(webmChunks);
+  return webmToOgg(webmBuffer);
 }
 
 // ─── TTS: Preferences storage ─────────────────────────────────────────────────
@@ -290,11 +312,19 @@ async function handleTTS(msg) {
     }
 
     const audioBuffer = await synthesizeTTS(text, voice, speed);
-    const result = await bot.sendVoice(msg.chat.id, audioBuffer, {
-      caption: '🔈 Text to Voice Bot',
-      reply_to_message_id: msg.message_id,
-      reply_markup: keyboard,
-    });
+    const result = await bot.sendVoice(
+      msg.chat.id,
+      audioBuffer,
+      {
+        caption: '🔈 Text to Voice Bot',
+        reply_to_message_id: msg.message_id,
+        reply_markup: keyboard,
+      },
+      {
+        filename: 'voice.ogg',
+        contentType: 'audio/ogg',
+      }
+    );
 
     const fileId = result?.voice?.file_id;
     if (fileId) ttsCache.set(cacheKey, fileId);
