@@ -932,12 +932,6 @@ export default {
     if (method === 'GET' && url.pathname === '/')
       return new Response(MINI_APP_HTML, { headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
 
-    // Debug: check token presence (never leaks value)
-    if (method === 'GET' && url.pathname === '/debug-token') {
-      const tok = env.BOT_TOKEN || '';
-      return new Response(JSON.stringify({ length: tok.length, first4: tok.slice(0,4), last4: tok.slice(-4) }), { headers: { 'Content-Type': 'application/json' } });
-    }
-
     // One-time webhook setup (call GET /setup to register webhook)
     if (method === 'GET' && url.pathname === '/setup') {
       const workerUrl = `${url.protocol}//${url.host}/webhook`;

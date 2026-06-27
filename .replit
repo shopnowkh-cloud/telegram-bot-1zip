@@ -6,24 +6,3 @@ channel = "stable-25_05"
 expertMode = true
 
 [workflows]
-runButton = "Project"
-
-[[workflows.workflow]]
-name = "Project"
-mode = "parallel"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Fix CF Secret"
-
-[[workflows.workflow]]
-name = "Fix CF Secret"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "bash fix-cf-secret.sh"
-
-[workflows.workflow.metadata]
-outputType = "console"
