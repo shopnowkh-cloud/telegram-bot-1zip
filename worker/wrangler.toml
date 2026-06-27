@@ -1,0 +1,11 @@
+name = "telegram-group-bot"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+[triggers]
+crons = ["* * * * *"]
+
+# KV namespace — ID filled in by deploy script
+[[kv_namespaces]]
+binding = "KV"
+id = "PLACEHOLDER"
