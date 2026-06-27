@@ -1,5 +1,6 @@
 const { TelegramBot } = require('node-telegram-bot-api');
 const fs = require('fs');
+const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
 
 const TOKEN = process.env.BOT_TOKEN;
 if (!TOKEN) {
@@ -163,7 +164,6 @@ const FEMALE_VOICES = {
 const SPEED_RATES  = { 'x0.5': '-50%', 'x1': '+0%', 'x1.5': '+50%', 'x2': '+100%' };
 const SPEED_LABELS = { 'x0.5': '🐢 x0.5', 'x1': '▶️ x1', 'x1.5': '⚡ x1.5', 'x2': '🚀 x2' };
 
-const GOOGLE_TTS_SPEED = { 'x0.5': '0.7', 'x1': '1', 'x1.5': '1.3', 'x2': '1.5' };
 
 // ─── TTS: Language detection ───────────────────────────────────────────────────
 const SCRIPT_MAP = [
@@ -209,52 +209,25 @@ function stripUnspeakable(text) {
     .trim();
 }
 
-// ─── TTS: Google TTS synthesis (no API key required) ──────────────────────────
-const GOOGLE_TTS_LANG = {
-  km: 'km', en: 'en', th: 'th', zh: 'zh-CN', ja: 'ja', ko: 'ko',
-  vi: 'vi', fr: 'fr', de: 'de', es: 'es', ru: 'ru', ar: 'ar',
-  hi: 'hi', pt: 'pt', it: 'it', id: 'id', ms: 'ms', tr: 'tr',
-  pl: 'pl', nl: 'nl', sv: 'sv', da: 'da', fi: 'fi', no: 'no',
-  uk: 'uk', cs: 'cs', ro: 'ro', hu: 'hu', el: 'el', he: 'he',
-  bn: 'bn', ur: 'ur', fa: 'fa', ta: 'ta', te: 'te', ml: 'ml',
-  my: 'my', lo: 'lo', si: 'si', mn: 'mn', 'zh-CN': 'zh-CN', 'zh-TW': 'zh-TW',
-};
-
-async function synthesizeTTS(text, lang, speed = 'x1') {
+// ─── TTS: Microsoft Edge Neural TTS synthesis ─────────────────────────────────
+async function synthesizeTTS(text, voiceName, speed = 'x1') {
   const cleanText = stripUnspeakable(text);
   if (!cleanText) throw new Error('No speakable text');
 
-  const gLang  = GOOGLE_TTS_LANG[lang] || 'en';
-  const gSpeed = GOOGLE_TTS_SPEED[speed] || '1';
+  const rate = SPEED_RATES[speed] || '+0%';
 
-  const MAX = 180;
-  const parts = [];
-  let remaining = cleanText;
-  while (remaining.length > 0) {
-    if (remaining.length <= MAX) { parts.push(remaining); break; }
-    let cut = remaining.lastIndexOf(' ', MAX);
-    if (cut <= 0) cut = MAX;
-    parts.push(remaining.slice(0, cut).trim());
-    remaining = remaining.slice(cut).trim();
-  }
+  const tts = new MsEdgeTTS();
+  await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
 
-  const buffers = [];
-  for (const part of parts) {
-    const url = `https://translate.google.com/translate_tts` +
-      `?ie=UTF-8&q=${encodeURIComponent(part)}&tl=${gLang}&ttsspeed=${gSpeed}&client=tw-ob`;
-    const resp = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://translate.google.com/',
-        'Accept': 'audio/mpeg,audio/*;q=0.9,*/*;q=0.8',
-      },
-    });
-    if (!resp.ok) throw new Error(`Google TTS HTTP ${resp.status} for lang=${gLang}`);
-    buffers.push(Buffer.from(await resp.arrayBuffer()));
-  }
+  const chunks = [];
+  await new Promise((resolve, reject) => {
+    const readable = tts.toStream(cleanText, { rate });
+    readable.on('data', chunk => chunks.push(chunk));
+    readable.on('end', resolve);
+    readable.on('error', reject);
+  });
 
-  if (buffers.length === 1) return buffers[0];
-  return Buffer.concat(buffers);
+  return Buffer.concat(chunks);
 }
 
 // ─── TTS: Preferences storage ─────────────────────────────────────────────────
@@ -298,7 +271,8 @@ async function handleTTS(msg) {
   const gender = pref.gender || 'female';
   const speed  = pref.speed  || 'x1';
   const lang   = detectLang(text);
-  const cacheKey = `${lang}:${gender}:${speed}:${text}`;
+  const voice  = getVoice(lang, gender);
+  const cacheKey = `${voice}:${speed}:${text}`;
   const keyboard = buildVoiceKeyboard(gender, speed);
 
   bot.sendChatAction(msg.chat.id, 'record_voice').catch(() => {});
@@ -314,7 +288,7 @@ async function handleTTS(msg) {
       return;
     }
 
-    const audioBuffer = await synthesizeTTS(text, lang, speed);
+    const audioBuffer = await synthesizeTTS(text, voice, speed);
     const result = await bot.sendVoice(msg.chat.id, audioBuffer, {
       caption: '🔈 Text to Voice Bot',
       reply_to_message_id: msg.message_id,
