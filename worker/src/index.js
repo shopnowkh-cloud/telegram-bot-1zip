@@ -932,6 +932,32 @@ export default {
     if (method === 'GET' && url.pathname === '/')
       return new Response(MINI_APP_HTML, { headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
 
+    // Debug: check token presence (never leaks value)
+    if (method === 'GET' && url.pathname === '/debug-token') {
+      const tok = env.BOT_TOKEN || '';
+      return new Response(JSON.stringify({ length: tok.length, first4: tok.slice(0,4), last4: tok.slice(-4) }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // One-time webhook setup (call GET /setup to register webhook)
+    if (method === 'GET' && url.pathname === '/setup') {
+      const workerUrl = `${url.protocol}//${url.host}/webhook`;
+      try {
+        await tg('deleteWebhook', { drop_pending_updates: true }, env.BOT_TOKEN);
+        const result = await tg('setWebhook', {
+          url: workerUrl,
+          allowed_updates: ['message', 'callback_query', 'my_chat_member'],
+        }, env.BOT_TOKEN);
+        const info = await tg('getWebhookInfo', {}, env.BOT_TOKEN);
+        return new Response(JSON.stringify({ ok: true, webhook: workerUrl, info }, null, 2), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ ok: false, error: err.message }, null, 2), {
+          status: 500, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
     // API
     if (method === 'GET'  && url.pathname === '/api/groups') return apiGroups(request, env);
     if (method === 'POST' && url.pathname === '/api/open')   return apiOpen(request, env);

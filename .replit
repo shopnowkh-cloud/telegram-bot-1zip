@@ -15,15 +15,15 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Start Bot"
+args = "Fix CF Secret"
 
 [[workflows.workflow]]
-name = "Start Bot"
+name = "Fix CF Secret"
 author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "node bot.js"
+args = "bash fix-cf-secret.sh"
 
 [workflows.workflow.metadata]
 outputType = "console"
