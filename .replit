@@ -7,3 +7,24 @@ expertMode = true
 stack = "BEST_EFFORT_FALLBACK"
 
 [workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start Bot"
+
+[[workflows.workflow]]
+name = "Start Bot"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "node bot.js"
+
+[workflows.workflow.metadata]
+outputType = "console"
