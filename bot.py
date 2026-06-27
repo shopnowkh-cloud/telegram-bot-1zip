@@ -15,7 +15,7 @@ import imageio_ffmpeg
 _FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
 from langdetect import detect as langdetect_detect, detect_langs, DetectorFactory
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineQueryResultVoice, constants
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineQueryResultVoice, MessageEntity, constants
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, ContextTypes, filters
 from telegram.request import HTTPXRequest
 
@@ -831,8 +831,15 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
         id="tts_1",
         voice_url=voice_url,
         title=title,
-        caption='<tg-emoji emoji-id="5388632425314140043">🔈</tg-emoji> @limsovannradybot',
-        parse_mode="HTML",
+        caption='🔈 @limsovannradybot',
+        caption_entities=[
+            MessageEntity(
+                type=MessageEntity.CUSTOM_EMOJI,
+                offset=0,
+                length=2,
+                custom_emoji_id="5388632425314140043",
+            )
+        ],
     )
     await query.answer([result], cache_time=300)
 
