@@ -5,7 +5,11 @@ compatibility_date = "2025-01-01"
 [triggers]
 crons = ["* * * * *"]
 
-# KV namespace — ID filled in by deploy script
 [[kv_namespaces]]
 binding = "KV"
 id = "d19e046ab1174544b19f96d92771fac0"
+
+# Allow importing .html files as text strings
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]

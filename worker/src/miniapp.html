@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="km">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Group Manager</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --bg2: var(--tg-theme-secondary-bg-color, #f1f1f1);
+    --text: var(--tg-theme-text-color, #222222);
+    --hint: var(--tg-theme-hint-color, #999999);
+    --link: var(--tg-theme-link-color, #2481cc);
+    --btn: var(--tg-theme-button-color, #2481cc);
+    --btnText: var(--tg-theme-button-text-color, #ffffff);
+    --accent: var(--tg-theme-accent-text-color, #2481cc);
+    --radius: 14px;
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; background: var(--bg2); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 15px; }
+
+  /* ── Screens ── */
+  .screen { display: none; flex-direction: column; height: 100vh; }
+  .screen.active { display: flex; }
+
+  /* ── Header ── */
+  .header {
+    background: var(--bg);
+    padding: 14px 16px 12px;
+    display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid rgba(0,0,0,.07);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .header-back {
+    width: 32px; height: 32px; border-radius: 50%; background: var(--bg2);
+    border: none; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    color: var(--accent); font-size: 18px; flex-shrink: 0;
+  }
+  .header h1 { font-size: 17px; font-weight: 600; flex: 1; }
+  .header-sub { font-size: 12px; color: var(--hint); }
+
+  /* ── Scroll area ── */
+  .scroll { flex: 1; overflow-y: auto; padding: 12px 16px; padding-bottom: calc(16px + var(--safe-bottom)); }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--bg); border-radius: var(--radius);
+    margin-bottom: 10px; overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06);
+  }
+  .group-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 16px; cursor: pointer;
+    transition: background .15s;
+  }
+  .group-item:active { background: var(--bg2); }
+  .group-avatar {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--btn), var(--accent));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; flex-shrink: 0; color: #fff;
+  }
+  .group-info { flex: 1; min-width: 0; }
+  .group-name { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .group-status { font-size: 12px; margin-top: 2px; }
+  .status-open { color: #30c85e; }
+  .status-closed { color: var(--hint); }
+  .chevron { color: var(--hint); font-size: 18px; opacity: .5; }
+
+  /* ── Status badge ── */
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 8px; border-radius: 20px; font-size: 11px; font-weight: 600;
+  }
+  .badge-open { background: rgba(48,200,94,.15); color: #22a34e; }
+  .badge-closed { background: rgba(0,0,0,.07); color: var(--hint); }
+
+  /* ── Control screen ── */
+  .control-hero {
+    background: var(--bg); padding: 24px 20px 20px;
+    text-align: center; border-bottom: 1px solid rgba(0,0,0,.06);
+  }
+  .hero-avatar {
+    width: 64px; height: 64px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--btn), var(--accent));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 30px; margin: 0 auto 12px; color: #fff;
+  }
+  .hero-title { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+  .hero-status { font-size: 14px; }
+
+  /* ── Countdown ── */
+  .countdown-box {
+    background: rgba(48,200,94,.1); border-radius: var(--radius);
+    padding: 14px 16px; margin: 14px 16px 0;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .countdown-box.hidden { display: none; }
+  .countdown-label { font-size: 13px; color: #22a34e; font-weight: 500; }
+  .countdown-time { font-size: 22px; font-weight: 700; color: #22a34e; font-variant-numeric: tabular-nums; }
+
+  /* ── Buttons ── */
+  .btn-row { display: flex; gap: 10px; padding: 14px 16px; }
+  .btn {
+    flex: 1; height: 48px; border-radius: var(--radius);
+    border: none; font-size: 15px; font-weight: 600; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    transition: opacity .15s, transform .1s;
+  }
+  .btn:active { opacity: .8; transform: scale(.97); }
+  .btn-primary { background: var(--btn); color: var(--btnText); }
+  .btn-danger { background: rgba(255,59,48,.12); color: #ff3b30; }
+  .btn-outline {
+    background: var(--bg2); color: var(--text);
+    border: 1.5px solid rgba(0,0,0,.1);
+  }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* ── Duration picker ── */
+  .section-label {
+    font-size: 12px; font-weight: 600; color: var(--hint);
+    text-transform: uppercase; letter-spacing: .5px;
+    padding: 16px 16px 8px;
+  }
+  .duration-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 8px; padding: 0 16px 16px;
+  }
+  .dur-btn {
+    height: 44px; border-radius: 10px; border: 1.5px solid rgba(0,0,0,.08);
+    background: var(--bg); font-size: 14px; font-weight: 600;
+    cursor: pointer; color: var(--text); transition: all .15s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .dur-btn:active, .dur-btn.selected { background: var(--btn); color: var(--btnText); border-color: var(--btn); }
+
+  /* ── Custom input ── */
+  .custom-input-wrap { padding: 0 16px 16px; }
+  .custom-input {
+    width: 100%; height: 48px; border-radius: var(--radius);
+    border: 1.5px solid rgba(0,0,0,.1); background: var(--bg);
+    padding: 0 14px; font-size: 15px; color: var(--text);
+    outline: none; transition: border-color .2s;
+  }
+  .custom-input:focus { border-color: var(--btn); }
+  .custom-input::placeholder { color: var(--hint); }
+
+  /* ── Empty state ── */
+  .empty {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; padding: 60px 30px; text-align: center; gap: 12px;
+  }
+  .empty-icon { font-size: 52px; opacity: .4; }
+  .empty-title { font-size: 17px; font-weight: 600; }
+  .empty-desc { font-size: 14px; color: var(--hint); line-height: 1.5; }
+
+  /* ── Toast ── */
+  .toast {
+    position: fixed; bottom: calc(20px + var(--safe-bottom)); left: 50%; transform: translateX(-50%) translateY(80px);
+    background: rgba(0,0,0,.8); color: #fff; border-radius: 20px;
+    padding: 10px 20px; font-size: 14px; font-weight: 500;
+    transition: transform .3s ease; z-index: 100; white-space: nowrap;
+    backdrop-filter: blur(10px);
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); }
+
+  /* ── Loader ── */
+  .loader { display: flex; justify-content: center; padding: 40px; }
+  .spinner {
+    width: 28px; height: 28px; border: 3px solid rgba(0,0,0,.1);
+    border-top-color: var(--btn); border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Divider ── */
+  .divider { height: 1px; background: rgba(0,0,0,.06); margin: 0 16px; }
+</style>
+</head>
+<body>
+
+<!-- ══ Screen 1: Group List ══════════════════════════════════════════════ -->
+<div id="screen-list" class="screen active">
+  <div class="header">
+    <div style="flex:1">
+      <h1>ការគ្រប់គ្រង Group</h1>
+    </div>
+    <button class="btn" style="flex:none;width:auto;padding:0 12px;height:34px;font-size:13px;border-radius:20px;background:var(--bg2);color:var(--text);border:none;" onclick="loadGroups()">🔄</button>
+  </div>
+  <div class="scroll">
+    <div id="group-list-content">
+      <div class="loader"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Screen 2: Group Control ═══════════════════════════════════════════ -->
+<div id="screen-control" class="screen">
+  <div class="header">
+    <button class="header-back" onclick="goBack()">‹</button>
+    <div style="flex:1">
+      <div class="header h1" id="ctrl-header-name" style="font-size:17px;font-weight:600;"></div>
+    </div>
+  </div>
+  <div class="scroll">
+    <div class="card">
+      <div class="control-hero">
+        <div class="hero-avatar">👥</div>
+        <div class="hero-title" id="ctrl-name"></div>
+        <div class="hero-status" id="ctrl-status"></div>
+      </div>
+      <div id="countdown-box" class="countdown-box hidden">
+        <div class="countdown-label">⏱ នឹងបិទក្នុង</div>
+        <div class="countdown-time" id="countdown-val">--:--</div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-open" onclick="showDurationPicker()">🔓 បើក Group</button>
+        <button class="btn btn-danger" id="btn-close" onclick="closeGroupNow()">🔒 បិទ</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Screen 3: Duration Picker ═════════════════════════════════════════ -->
+<div id="screen-duration" class="screen">
+  <div class="header">
+    <button class="header-back" onclick="showControl()">‹</button>
+    <h1>ជ្រើសរយៈពេល</h1>
+  </div>
+  <div class="scroll">
+    <div class="section-label">រយៈពេលដែលបានកំណត់ទុក</div>
+    <div class="duration-grid" id="dur-grid"></div>
+    <div class="divider"></div>
+    <div class="section-label">កំណត់ផ្ទាល់ខ្លួន</div>
+    <div class="custom-input-wrap">
+      <input class="custom-input" type="number" id="custom-minutes" placeholder="ចំនួននាទី (1–1440)" min="1" max="1440">
+    </div>
+    <div style="padding:0 16px 16px;">
+      <button class="btn btn-primary" style="width:100%" onclick="openWithCustom()">✅ បើក Group</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const twa = window.Telegram.WebApp;
+twa.ready();
+twa.expand();
+
+const DURATIONS = [
+  { label: '5 នាទី',  val: 5   },
+  { label: '10 នាទី', val: 10  },
+  { label: '15 នាទី', val: 15  },
+  { label: '30 នាទី', val: 30  },
+  { label: '1 ម៉ោង',  val: 60  },
+  { label: '2 ម៉ោង',  val: 120 },
+];
+
+let state = { groups: {}, selectedId: null, timer: null, countdownInterval: null };
+const BASE = '';  // same origin
+
+// ── API ──────────────────────────────────────────────────────────────────────
+async function api(path, body) {
+  const init = twa.initData;
+  const opts = body
+    ? { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...body, initData: init}) }
+    : { headers:{ 'X-Init-Data': init } };
+  const r = await fetch(BASE + path, opts);
+  const json = await r.json();
+  if (!json.ok) throw new Error(json.error || 'Server error');
+  return json;
+}
+
+// ── Screen routing ────────────────────────────────────────────────────────────
+function show(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg, dur = 2500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), dur);
+}
+
+// ── Countdown ─────────────────────────────────────────────────────────────────
+function startCountdown(closeAt) {
+  if (state.countdownInterval) clearInterval(state.countdownInterval);
+  const box = document.getElementById('countdown-box');
+  const val = document.getElementById('countdown-val');
+  box.classList.remove('hidden');
+
+  function tick() {
+    const left = Math.max(0, closeAt - Date.now());
+    if (left === 0) {
+      clearInterval(state.countdownInterval);
+      box.classList.add('hidden');
+      loadGroupStatus();
+      return;
+    }
+    const h = Math.floor(left / 3600000);
+    const m = Math.floor((left % 3600000) / 60000);
+    const s = Math.floor((left % 60000) / 1000);
+    val.textContent = h > 0
+      ? `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+      : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+  tick();
+  state.countdownInterval = setInterval(tick, 1000);
+}
+
+function stopCountdown() {
+  if (state.countdownInterval) clearInterval(state.countdownInterval);
+  document.getElementById('countdown-box').classList.add('hidden');
+}
+
+// ── Group list ────────────────────────────────────────────────────────────────
+async function loadGroups() {
+  const el = document.getElementById('group-list-content');
+  el.innerHTML = '<div class="loader"><div class="spinner"></div></div>';
+  show('screen-list');
+  try {
+    const { groups, timers } = await api('/api/groups');
+    state.groups = groups;
+    state.timers = timers;
+    renderGroupList(groups, timers);
+  } catch(e) {
+    el.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-title">មិនអាចទាញទិន្នន័យ</div><div class="empty-desc">${e.message}</div></div>`;
+  }
+}
+
+function renderGroupList(groups, timers) {
+  const el = document.getElementById('group-list-content');
+  const list = Object.values(groups);
+  if (!list.length) {
+    el.innerHTML = `<div class="empty">
+      <div class="empty-icon">👥</div>
+      <div class="empty-title">មិនទាន់មាន Group</div>
+      <div class="empty-desc">Add bot ចូល Group ហើយ តែងតាំងជា Admin ជាមុន</div>
+    </div>`;
+    return;
+  }
+  el.innerHTML = '<div class="card">' + list.map((g, i) => {
+    const timer = timers[g.id];
+    const isOpen = !!timer;
+    const statusHtml = isOpen
+      ? `<span class="badge badge-open">🟢 បើក</span>`
+      : `<span class="badge badge-closed">⚫ បិទ</span>`;
+    const divider = i < list.length - 1 ? '<div class="divider"></div>' : '';
+    return `<div class="group-item" onclick="selectGroup(${g.id})">
+      <div class="group-avatar">${g.title[0]?.toUpperCase() || '?'}</div>
+      <div class="group-info">
+        <div class="group-name">${escHtml(g.title)}</div>
+        <div class="group-status">${statusHtml}</div>
+      </div>
+      <div class="chevron">›</div>
+    </div>${divider}`;
+  }).join('') + '</div>';
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Group control ─────────────────────────────────────────────────────────────
+function selectGroup(id) {
+  twa.HapticFeedback?.impactOccurred('light');
+  state.selectedId = id;
+  showControl();
+}
+
+async function loadGroupStatus() {
+  try {
+    const { groups, timers } = await api('/api/groups');
+    state.groups = groups;
+    state.timers = timers;
+    renderControl();
+  } catch {}
+}
+
+function showControl() {
+  const g = state.groups[state.selectedId];
+  if (!g) { show('screen-list'); return; }
+  document.getElementById('ctrl-header-name').textContent = g.title;
+  show('screen-control');
+  renderControl();
+}
+
+function renderControl() {
+  const g = state.groups[state.selectedId];
+  if (!g) return;
+  const timer = state.timers?.[state.selectedId];
+  document.getElementById('ctrl-name').textContent = g.title;
+
+  if (timer) {
+    const closeAt = timer.closeAt;
+    document.getElementById('ctrl-status').innerHTML = `<span class="badge badge-open" style="font-size:13px">🟢 Group កំពុងបើក</span>`;
+    document.getElementById('btn-open').textContent = '🔄 ផ្លាស់ប្តូររយៈពេល';
+    startCountdown(closeAt);
+  } else {
+    document.getElementById('ctrl-status').innerHTML = `<span class="badge badge-closed" style="font-size:13px">⚫ Group បានបិទ</span>`;
+    document.getElementById('btn-open').textContent = '🔓 បើក Group';
+    stopCountdown();
+  }
+}
+
+function goBack() {
+  twa.HapticFeedback?.impactOccurred('light');
+  stopCountdown();
+  loadGroups();
+}
+
+// ── Duration picker ───────────────────────────────────────────────────────────
+function showDurationPicker() {
+  twa.HapticFeedback?.impactOccurred('light');
+  const grid = document.getElementById('dur-grid');
+  grid.innerHTML = DURATIONS.map(d =>
+    `<button class="dur-btn" onclick="openWithMinutes(${d.val})">${d.label}</button>`
+  ).join('');
+  document.getElementById('custom-minutes').value = '';
+  show('screen-duration');
+}
+
+async function openWithMinutes(minutes) {
+  twa.HapticFeedback?.impactOccurred('medium');
+  document.querySelectorAll('.dur-btn').forEach(b => b.classList.remove('selected'));
+  event?.target?.classList.add('selected');
+  await doOpen(minutes);
+}
+
+async function openWithCustom() {
+  const val = parseInt(document.getElementById('custom-minutes').value);
+  if (!val || val < 1 || val > 1440) {
+    toast('⚠️ សូមបញ្ចូលចំនួន 1–1440'); return;
+  }
+  await doOpen(val);
+}
+
+async function doOpen(minutes) {
+  try {
+    await api('/api/open', { groupId: state.selectedId, minutes });
+    const { groups, timers } = await api('/api/groups');
+    state.groups = groups; state.timers = timers;
+    twa.HapticFeedback?.notificationOccurred('success');
+    toast(`✅ Group បើក ${fmtDur(minutes)}`);
+    showControl();
+  } catch(e) {
+    twa.HapticFeedback?.notificationOccurred('error');
+    toast('❌ ' + e.message);
+  }
+}
+
+async function closeGroupNow() {
+  twa.HapticFeedback?.impactOccurred('medium');
+  try {
+    await api('/api/close', { groupId: state.selectedId });
+    const { groups, timers } = await api('/api/groups');
+    state.groups = groups; state.timers = timers;
+    twa.HapticFeedback?.notificationOccurred('success');
+    toast('🔒 Group បានបិទ');
+    renderControl();
+  } catch(e) {
+    twa.HapticFeedback?.notificationOccurred('error');
+    toast('❌ ' + e.message);
+  }
+}
+
+function fmtDur(m) {
+  if (m < 60) return `${m} នាទី`;
+  const h = Math.floor(m/60), r = m%60;
+  return r ? `${h}ម៉ោង ${r}នាទី` : `${h} ម៉ោង`;
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadGroups();
+</script>
+</body>
+</html>

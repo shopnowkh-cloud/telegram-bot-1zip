@@ -1,6 +1,8 @@
 // Telegram Bot — Cloudflare Worker (webhook mode)
 // State stored in KV; auto-close runs on Cron trigger every minute.
 
+import MINI_APP_HTML from './miniapp.html';
+
 const TG = 'https://api.telegram.org';
 
 // ─── Telegram API helper ──────────────────────────────────────────────────────
@@ -330,31 +332,156 @@ async function handleTextInput(msg, KV, token) {
   }
 }
 
+// ─── initData validation (HMAC-SHA256) ───────────────────────────────────────
+async function validateInitData(initData, botToken) {
+  try {
+    const params = new URLSearchParams(initData);
+    const hash   = params.get('hash');
+    if (!hash) return false;
+    params.delete('hash');
+    const dataCheckStr = [...params.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n');
+    const enc    = new TextEncoder();
+    const sk     = await crypto.subtle.importKey('raw', enc.encode('WebAppData'), { name:'HMAC', hash:'SHA-256' }, false, ['sign']);
+    const skBytes = await crypto.subtle.sign('HMAC', sk, enc.encode(botToken));
+    const hk     = await crypto.subtle.importKey('raw', skBytes, { name:'HMAC', hash:'SHA-256' }, false, ['sign']);
+    const sig    = await crypto.subtle.sign('HMAC', hk, enc.encode(dataCheckStr));
+    const computed = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2,'0')).join('');
+    return computed === hash;
+  } catch { return false; }
+}
+
+function getUserFromInitData(initData) {
+  try {
+    const params = new URLSearchParams(initData);
+    return JSON.parse(params.get('user') || 'null');
+  } catch { return null; }
+}
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+  });
+}
+
+// ─── API: GET /api/groups ─────────────────────────────────────────────────────
+async function apiGroups(request, env) {
+  const initData = request.headers.get('X-Init-Data') || '';
+  if (!(await validateInitData(initData, env.BOT_TOKEN)))
+    return json({ ok: false, error: 'Unauthorized' }, 401);
+
+  const user   = getUserFromInitData(initData);
+  const groups = await getGroups(env.KV);
+  const timers = {};
+
+  for (const gid of Object.keys(groups)) {
+    const t = await getTimer(env.KV, gid);
+    if (t) timers[gid] = t;
+  }
+
+  // Filter to groups where user is admin
+  const filtered = {};
+  await Promise.all(Object.values(groups).map(async g => {
+    if (!user || await isAdmin(g.id, user.id, env.BOT_TOKEN))
+      filtered[g.id] = g;
+  }));
+
+  return json({ ok: true, groups: filtered, timers });
+}
+
+// ─── API: POST /api/open ──────────────────────────────────────────────────────
+async function apiOpen(request, env) {
+  const body     = await request.json();
+  const initData = body.initData || '';
+  if (!(await validateInitData(initData, env.BOT_TOKEN)))
+    return json({ ok: false, error: 'Unauthorized' }, 401);
+
+  const user    = getUserFromInitData(initData);
+  const { groupId, minutes } = body;
+  if (!groupId || !minutes || minutes < 1 || minutes > 1440)
+    return json({ ok: false, error: 'Invalid params' }, 400);
+
+  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN)))
+    return json({ ok: false, error: 'Not an admin' }, 403);
+
+  await delTimer(env.KV, groupId);
+  await openGroup(groupId, env.BOT_TOKEN);
+
+  const groups  = await getGroups(env.KV);
+  const closeAt = Date.now() + minutes * 60000;
+  await setTimer(env.KV, groupId, {
+    closeAt,
+    adminPrivateChatId: user?.id,
+    menuMessageId: null,
+    groupTitle: groups[groupId]?.title || String(groupId),
+  });
+
+  return json({ ok: true, closeAt });
+}
+
+// ─── API: POST /api/close ─────────────────────────────────────────────────────
+async function apiClose(request, env) {
+  const body     = await request.json();
+  const initData = body.initData || '';
+  if (!(await validateInitData(initData, env.BOT_TOKEN)))
+    return json({ ok: false, error: 'Unauthorized' }, 401);
+
+  const user     = getUserFromInitData(initData);
+  const { groupId } = body;
+  if (!groupId) return json({ ok: false, error: 'Missing groupId' }, 400);
+
+  if (user && !(await isAdmin(groupId, user.id, env.BOT_TOKEN)))
+    return json({ ok: false, error: 'Not an admin' }, 403);
+
+  await delTimer(env.KV, groupId);
+  await closeGroup(groupId, env.BOT_TOKEN);
+
+  return json({ ok: true });
+}
+
 // ─── Main entry ───────────────────────────────────────────────────────────────
 export default {
   async fetch(request, env) {
-    if (request.method !== 'POST') return new Response('OK');
+    const url    = new URL(request.url);
+    const method = request.method;
 
-    const update = await request.json();
-    const token  = env.BOT_TOKEN;
-    const KV     = env.KV;
+    // CORS preflight
+    if (method === 'OPTIONS')
+      return new Response(null, { headers: { 'Access-Control-Allow-Origin':'*', 'Access-Control-Allow-Headers':'*', 'Access-Control-Allow-Methods':'GET,POST' } });
 
-    try {
-      if (update.my_chat_member) await handleMyChatMember(update.my_chat_member, KV);
-      else if (update.callback_query) await handleCallback(update.callback_query, KV, token);
-      else if (update.message) {
-        const msg = update.message;
-        if (msg.text?.startsWith('/start')) await handleStart(msg, KV, token);
-        else {
-          await handleGroupMessage(msg, KV);
-          await handleTextInput(msg, KV, token);
+    // ── Mini App HTML
+    if (method === 'GET' && url.pathname === '/')
+      return new Response(MINI_APP_HTML, { headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
+
+    // ── API routes
+    if (method === 'GET'  && url.pathname === '/api/groups') return apiGroups(request, env);
+    if (method === 'POST' && url.pathname === '/api/open')   return apiOpen(request, env);
+    if (method === 'POST' && url.pathname === '/api/close')  return apiClose(request, env);
+
+    // ── Telegram webhook (POST /)
+    if (method === 'POST' && url.pathname === '/') {
+      const update = await request.json();
+      const token  = env.BOT_TOKEN;
+      const KV     = env.KV;
+      try {
+        if (update.my_chat_member)  await handleMyChatMember(update.my_chat_member, KV);
+        else if (update.callback_query) await handleCallback(update.callback_query, KV, token);
+        else if (update.message) {
+          const msg = update.message;
+          if (msg.text?.startsWith('/start')) await handleStart(msg, KV, token);
+          else {
+            await handleGroupMessage(msg, KV);
+            await handleTextInput(msg, KV, token);
+          }
         }
-      }
-    } catch (err) {
-      console.error('Worker error:', err.message);
+      } catch (err) { console.error('Webhook error:', err.message); }
+      return new Response('OK');
     }
 
-    return new Response('OK');
+    return new Response('Not Found', { status: 404 });
   },
 
   async scheduled(event, env) {
