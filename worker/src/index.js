@@ -202,89 +202,69 @@ function stripUnspeakable(text) {
     .trim();
 }
 
-// ─── TTS: Edge TTS via WebSocket ───────────────────────────────────────────────
-async function synthesizeEdgeTTS(text, voiceName, rate = '+0%') {
-  const connId = crypto.randomUUID().replace(/-/g, '').toUpperCase();
-  const wsUrl  = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1` +
-                 `?TrustedClientToken=${EDGE_TTS_TOKEN}&ConnectionId=${connId}`;
+// ─── TTS: Google TTS (unofficial REST API — no key, works in CF Workers) ──────
+// Maps internal language codes → Google TTS BCP-47 tags
+const GOOGLE_TTS_LANG = {
+  km: 'km', en: 'en', th: 'th', zh: 'zh-CN', ja: 'ja', ko: 'ko',
+  vi: 'vi', fr: 'fr', de: 'de', es: 'es', ru: 'ru', ar: 'ar',
+  hi: 'hi', pt: 'pt', it: 'it', id: 'id', ms: 'ms', tr: 'tr',
+  pl: 'pl', nl: 'nl', sv: 'sv', da: 'da', fi: 'fi', no: 'no',
+  uk: 'uk', cs: 'cs', ro: 'ro', hu: 'hu', el: 'el', he: 'he',
+  bn: 'bn', ur: 'ur', fa: 'fa', ta: 'ta', te: 'te', ml: 'ml',
+  my: 'my', lo: 'lo', si: 'si', mn: 'mn',
+};
 
-  const response = await fetch(wsUrl, {
-    headers: {
-      'Upgrade': 'websocket',
-      'Origin': 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache',
-    },
-  });
+// Maps speed keys → Google TTS speed values (0.24–1.5)
+const GOOGLE_TTS_SPEED = {
+  slow: '0.7', x1: '1', fast: '1.3', x15: '1.5',
+};
 
-  const ws = response.webSocket;
-  if (!ws) throw new Error('WebSocket upgrade failed');
-  ws.accept();
-
-  const reqId = crypto.randomUUID().replace(/-/g, '').toUpperCase();
-  const ts    = new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15) + 'Z';
-
-  ws.send(
-    `X-Timestamp:${ts}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n` +
-    `{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}`
-  );
-
+async function synthesizeTTS(text, lang, speed = 'x1') {
   const cleanText = stripUnspeakable(text);
-  const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>` +
-               `<voice name='${voiceName}'><prosody rate='${rate}'>${escapeXml(cleanText)}</prosody></voice></speak>`;
+  if (!cleanText) throw new Error('No speakable text');
 
-  ws.send(
-    `X-RequestId:${reqId}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${ts}\r\nPath:ssml\r\n\r\n${ssml}`
-  );
+  const gLang  = GOOGLE_TTS_LANG[lang] || 'en';
+  const gSpeed = GOOGLE_TTS_SPEED[speed] || '1';
 
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let settled  = false;
+  // Google TTS has a ~200-char limit per request; split on word boundaries
+  const MAX   = 180;
+  const parts = [];
+  let remaining = cleanText;
+  while (remaining.length > 0) {
+    if (remaining.length <= MAX) {
+      parts.push(remaining);
+      break;
+    }
+    // Find last space within MAX chars
+    let cut = remaining.lastIndexOf(' ', MAX);
+    if (cut <= 0) cut = MAX;
+    parts.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
+  }
 
-    const finish = (ok, val) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      ok ? resolve(val) : reject(val);
-    };
-
-    const timer = setTimeout(() => {
-      ws.close();
-      finish(false, new Error('TTS timeout'));
-    }, 25000);
-
-    ws.addEventListener('message', ({ data }) => {
-      if (typeof data === 'string') {
-        if (data.includes('Path:turn.end')) {
-          ws.close();
-          if (!chunks.length) { finish(false, new Error('No audio received')); return; }
-          const total  = chunks.reduce((s, c) => s + c.byteLength, 0);
-          const merged = new Uint8Array(total);
-          let off = 0;
-          for (const c of chunks) { merged.set(new Uint8Array(c), off); off += c.byteLength; }
-          finish(true, merged);
-        }
-      } else if (data instanceof ArrayBuffer && data.byteLength > 2) {
-        const headerLen  = new DataView(data).getUint16(0, false);
-        const audioStart = 2 + headerLen;
-        if (audioStart < data.byteLength) chunks.push(data.slice(audioStart));
-      }
+  const buffers = [];
+  for (const part of parts) {
+    const url = `https://translate.google.com/translate_tts` +
+      `?ie=UTF-8&q=${encodeURIComponent(part)}&tl=${gLang}&ttsspeed=${gSpeed}&client=tw-ob`;
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://translate.google.com/',
+        'Accept': 'audio/mpeg,audio/*;q=0.9,*/*;q=0.8',
+      },
     });
+    if (!resp.ok) throw new Error(`Google TTS HTTP ${resp.status} for lang=${gLang}`);
+    buffers.push(new Uint8Array(await resp.arrayBuffer()));
+  }
 
-    ws.addEventListener('error', () => finish(false, new Error('WebSocket error')));
-    ws.addEventListener('close', () => {
-      if (!settled && chunks.length) {
-        const total  = chunks.reduce((s, c) => s + c.byteLength, 0);
-        const merged = new Uint8Array(total);
-        let off = 0;
-        for (const c of chunks) { merged.set(new Uint8Array(c), off); off += c.byteLength; }
-        finish(true, merged);
-      } else {
-        finish(false, new Error('Connection closed without audio'));
-      }
-    });
-  });
+  if (buffers.length === 1) return buffers[0];
+
+  // Concatenate MP3 chunks (valid for CBR/VBR MP3 streams)
+  const total  = buffers.reduce((s, c) => s + c.byteLength, 0);
+  const merged = new Uint8Array(total);
+  let off = 0;
+  for (const c of buffers) { merged.set(c, off); off += c.byteLength; }
+  return merged;
 }
 
 // Send voice via multipart upload (supports file_id or raw bytes)
@@ -352,14 +332,14 @@ async function handleTTS(msg, KV, token) {
       return;
     }
 
-    const audioBytes = await synthesizeEdgeTTS(text, voice, rate);
+    const audioBytes = await synthesizeTTS(text, lang, speed);
     const result = await sendVoice(msg.chat.id, audioBytes, token, {
       caption: '🔈 Text to Voice Bot',
       reply_to_message_id: msg.message_id,
       reply_markup: keyboard,
     });
 
-    // Cache the file_id for reuse
+    // Cache the Telegram file_id for reuse
     const fileId = result?.voice?.file_id;
     if (fileId) await setTTSCache(KV, cacheKey, fileId).catch(() => {});
 
@@ -1393,6 +1373,23 @@ export default {
     // Mini App
     if (method === 'GET' && url.pathname === '/')
       return new Response(MINI_APP_HTML, { headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
+
+    // TTS diagnostic — returns raw MP3 or error JSON
+    if (method === 'GET' && url.pathname === '/test-tts') {
+      const text  = url.searchParams.get('text') || 'សួស្ដី! ខ្ញុំគឺជាសំឡេងបំប្លែងអក្សរ។';
+      const lang  = url.searchParams.get('lang')  || 'km';
+      const speed = url.searchParams.get('speed') || 'x1';
+      try {
+        const audio = await synthesizeTTS(text, lang, speed);
+        return new Response(audio, {
+          headers: { 'Content-Type': 'audio/mpeg', 'Content-Disposition': 'inline; filename=test.mp3' },
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ ok: false, error: e.message }, null, 2), {
+          status: 500, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    }
 
     // Diagnostic test endpoint
     if (method === 'GET' && url.pathname === '/test') {
